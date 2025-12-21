@@ -1498,8 +1498,10 @@ do
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled = false,
-        RepathEvery = 0.9,     -- รีสั่ง MoveTo เป็นระยะ กันยืนงง
-        StopRadius  = 4.0,     -- ใกล้ Root แค่ไหนถึงถือว่า “ถึง”
+
+        StopRadius    = 4.0,   -- ใกล้ Root แค่ไหนถือว่าถึง
+        UpdateRate    = 0.05,  -- ยิง Move() ถี่ๆ (เหมือนกดเดิน)
+        NudgeMoveToEvery = 0.6,-- เสริม MoveTo เป็นระยะ กันบางเกม ignore Move()
     })
 
     local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
@@ -1521,16 +1523,14 @@ do
     local function getCharHum()
         local plr = Players.LocalPlayer
         local ch = plr and plr.Character
-        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+        if not ch then return nil end
+
+        local hum = ch:FindFirstChildOfClass("Humanoid")
+        local hrp = ch:FindFirstChild("HumanoidRootPart")
         if hum and hrp and hum.Health > 0 then
             return ch, hum, hrp
         end
         return nil
-    end
-
-    local function dist(a, b)
-        return (a - b).Magnitude
     end
 
     local function stopRunner()
@@ -1545,26 +1545,55 @@ do
         local my = RS.token
 
         task.spawn(function()
+            local lastMoveTo = 0
+
             while AA1.state.Enabled and RS.token == my do
                 local target = getTargetRoot()
                 local ch, hum, hrp = getCharHum()
 
                 if target and ch and hum and hrp then
-                    -- ✅ เดินเหมือนกดเดิน/ยืนเท่านั้น: ใช้ MoveTo (ไม่ตั้ง CFrame ไม่วาร์ป)
-                    local radius = tonumber(AA1.state.StopRadius) or 4.0
-                    if dist(hrp.Position, target.Position) > radius then
+                    -- กันบางสภาพที่ทำให้เดินไม่ออก
+                    pcall(function()
+                        hum.AutoRotate = true
+                        if hum.Sit then hum.Sit = false end
+                        if hum.PlatformStand then hum.PlatformStand = false end
+                    end)
+
+                    local stopR = tonumber(AA1.state.StopRadius) or 4.0
+                    local delta = (target.Position - hrp.Position)
+                    local dist = delta.Magnitude
+
+                    if dist > stopR then
+                        -- ✅ เดินเหมือน “กดเดินค้าง” (ไม่วาร์ป ไม่ set CFrame)
+                        local dir = delta.Unit
                         pcall(function()
-                            hum:MoveTo(target.Position)
+                            hum:Move(dir, false)
                         end)
+
+                        -- fallback: บางเกมต้องมี MoveTo ช่วยกระตุกให้เริ่มเดิน
+                        if (os.clock() - lastMoveTo) >= (tonumber(AA1.state.NudgeMoveToEvery) or 0.6) then
+                            lastMoveTo = os.clock()
+                            pcall(function()
+                                hum:MoveTo(target.Position)
+                            end)
+                        end
                     else
-                        -- ใกล้แล้ว ก็ “ยืน” เฉยๆ (หยุดสั่ง MoveTo)
+                        -- ถึงแล้ว = ปล่อยให้ยืนเฉยๆ
+                        pcall(function()
+                            hum:Move(Vector3.zero, false)
+                        end)
                     end
                 end
 
-                local rp = tonumber(AA1.state.RepathEvery) or 0.9
-                if rp < 0.2 then rp = 0.2 end
-                task.wait(rp)
+                local dt = tonumber(AA1.state.UpdateRate) or 0.05
+                if dt < 0.03 then dt = 0.03 end
+                task.wait(dt)
             end
+
+            -- ตอนปิด สั่งหยุดเดิน
+            local _, hum = getCharHum()
+            if hum then pcall(function() hum:Move(Vector3.zero, false) end) end
+
             RS.running = false
         end)
     end
@@ -1576,9 +1605,7 @@ do
         emit()
 
         stopRunner()
-        if v then
-            runner()
-        end
+        if v then runner() end
     end
     function AA1.getEnabled() return AA1.state.Enabled == true end
     function AA1.ensureRunner()
@@ -1588,7 +1615,6 @@ do
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที (ไม่ซ้อน)
     task.defer(function()
         if AA1.getEnabled() then
             AA1.ensureRunner()
@@ -1623,7 +1649,6 @@ registerRight("Home", function(scroll)
     end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    -- cleanup (เฉพาะของระบบนี้)
     for _,n in ipairs({"ASR_Header","ASR_Row1"}) do
         local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
@@ -1637,7 +1662,6 @@ registerRight("Home", function(scroll)
     end
     scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 
-    -- dynamic LayoutOrder base = max + 1 (Model A V1 rule)
     local base = 0
     for _,c in ipairs(scroll:GetChildren()) do
         if c:IsA("GuiObject") and c ~= list then
@@ -1645,7 +1669,6 @@ registerRight("Home", function(scroll)
         end
     end
 
-    -- Header (ขึ้นต้น Auto + emoji, English)
     local header = Instance.new("TextLabel")
     header.Name = "ASR_Header"
     header.Parent = scroll
@@ -1658,7 +1681,6 @@ registerRight("Home", function(scroll)
     header.Text = "Auto Stand To Root 🧍"
     header.LayoutOrder = base + 1
 
-    -- Row1 (ขึ้นต้น Auto, no emoji, English)
     local row = Instance.new("Frame")
     row.Name = "ASR_Row1"
     row.Parent = scroll
