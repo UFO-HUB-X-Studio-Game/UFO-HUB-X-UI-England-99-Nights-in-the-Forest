@@ -710,8 +710,13 @@ registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (Switch / feeds logs sequentially)
+-- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one)
 -- Row 2  : "Select Fuel" (Model A V2 Overlay / 1 button: "Log" toggle)
+--
+-- Campfire:
+--   workspace.Map.Campground.MainFire.InnerTouchZone
+-- Logs:
+--   workspace.Items (Model) with: Main + "Meshes/log_Cylinder"
 
 ----------------------------------------------------------------------
 -- 0) AA1 MINI (generic + onChanged signal)
@@ -784,8 +789,8 @@ do
     local makeAA1 = _G.__UFOX_MAKE_AA1
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
-        Enabled   = false,   -- เลือกเชื้อเพลิง On/Off
-        FuelName  = "Log",
+        Enabled  = false,   -- toggle on/off
+        FuelName = "Log",
     })
 
     function AA1.setEnabled(v)
@@ -812,7 +817,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (brings ALL logs, one-by-one, then DROP)
+-- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (STRICT one-by-one feed)
 ----------------------------------------------------------------------
 do
     local SYSTEM_NAME = "Campfire_AutoRefill"
@@ -820,18 +825,25 @@ do
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
-        HeightMul   = 2.0,     -- "สูง 2 เท่า" เหนือ InnerTouchZone
-        LoopWait    = 0.10,    -- เร็วขึ้นได้ (ยิ่งต่ำยิ่งรัว)
-        MinLoopWait = 0.05,
-        RescanEvery = 2.0,     -- รีสแกนหาไม้ทั้งหมดทุกกี่วินาที
-        Cooldown    = 8.0,     -- กันหยิบไม้ซ้ำเร็วเกินไป (วินาที)
+        HeightMul   = 2.0,   -- สูง 2 เท่าเหนือ InnerTouchZone
+        DropWait    = 1.35,  -- ✅ สำคัญ: วาง 1 อัน -> รอให้ตก -> ค่อยอันถัดไป
+        RescanEvery = 2.0,   -- สแกนหาไม้ใหม่ทุกกี่วินาที
+        Cooldown    = 8.0,   -- กันหยิบอันเดิมซ้ำเร็วเกินไป
+        RetryWait   = 0.5,
     })
 
     local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
 
     local running, token = false, 0
+    local itemsFolder
 
-    -- Target 100% (ตามที่ให้มา)
+    local function getItemsFolder()
+        if itemsFolder and itemsFolder.Parent then return itemsFolder end
+        local f = workspace:FindFirstChild("Items")
+        if f then itemsFolder = f end
+        return itemsFolder
+    end
+
     local function getInnerTouchZone()
         local ok, zone = pcall(function()
             return workspace.Map.Campground.MainFire:FindFirstChild("InnerTouchZone")
@@ -840,7 +852,7 @@ do
         return nil
     end
 
-    -- signature ตามที่นายให้: มี Main + มี Meshes/log_Cylinder + HoverLabel (ไม่บังคับ)
+    -- ตาม signature ที่มึงให้: มี Main + มี Meshes/log_Cylinder
     local function isLogCrateModel(m)
         if not m or not m:IsA("Model") then return false end
         local main = m:FindFirstChild("Main")
@@ -851,11 +863,8 @@ do
     local function ensurePrimaryPart(m)
         if m.PrimaryPart and m.PrimaryPart:IsA("BasePart") then return m.PrimaryPart end
         local pp = m:FindFirstChildWhichIsA("BasePart", true)
-        if pp then
-            pcall(function() m.PrimaryPart = pp end)
-            return pp
-        end
-        return nil
+        if pp then pcall(function() m.PrimaryPart = pp end) end
+        return pp
     end
 
     local function setModelAnchored(m, anchored)
@@ -870,22 +879,14 @@ do
         for _, d in ipairs(m:GetDescendants()) do
             if d:IsA("BasePart") then
                 pcall(function()
-                    d.AssemblyLinearVelocity = Vector3.zero
+                    d.AssemblyLinearVelocity  = Vector3.zero
                     d.AssemblyAngularVelocity = Vector3.zero
                 end)
             end
         end
     end
 
-    local itemsFolder = nil
-    local function getItemsFolder()
-        if itemsFolder and itemsFolder.Parent then return itemsFolder end
-        local f = workspace:FindFirstChild("Items")
-        if f then itemsFolder = f end
-        return itemsFolder
-    end
-
-    -- คิวไม้ + anti-repeat
+    -- Queue + anti-repeat
     local queue = {}
     local qIndex = 1
     local lastScan = 0
@@ -893,29 +894,32 @@ do
 
     local function rebuildQueue()
         local items = getItemsFolder()
-        if not items then return end
+        if not items then
+            queue = {}
+            qIndex = 1
+            lastScan = os.clock()
+            return
+        end
 
         queue = {}
         qIndex = 1
-
         for _, ch in ipairs(items:GetChildren()) do
             if isLogCrateModel(ch) then
                 table.insert(queue, ch)
             end
         end
-
         lastScan = os.clock()
     end
 
     local function nextLog()
         local now = os.clock()
         local rescanEvery = tonumber(AA1.state.RescanEvery) or 2.0
-        if (now - lastScan) > rescanEvery or #queue == 0 then
+        if (#queue == 0) or ((now - lastScan) > rescanEvery) then
             rebuildQueue()
         end
-
         if #queue == 0 then return nil end
 
+        local cd = tonumber(AA1.state.Cooldown) or 8.0
         local tries = 0
         while tries < #queue do
             if qIndex > #queue then qIndex = 1 end
@@ -925,7 +929,6 @@ do
 
             if m and m.Parent and isLogCrateModel(m) then
                 local t = pickedAt[m]
-                local cd = tonumber(AA1.state.Cooldown) or 8.0
                 if (not t) or ((now - t) >= cd) then
                     pickedAt[m] = now
                     return m
@@ -938,37 +941,37 @@ do
 
     local function dropOneLogIntoFire()
         local zone = getInnerTouchZone()
-        if not zone then return end
+        if not zone then return false end
 
-        -- ต้องเลือกเชื้อเพลิงก่อน (Row2 ON)
+        -- ต้องเลือกเชื้อเพลิง (Row2 ON)
         if not (AA1_FUEL and AA1_FUEL.getEnabled and AA1_FUEL.getEnabled()) then
-            return
+            return false
         end
 
         local fuel = (AA1_FUEL.getFuel and AA1_FUEL.getFuel()) or "Log"
-        if fuel ~= "Log" then return end
+        if fuel ~= "Log" then return false end
 
         local crate = nextLog()
-        if not crate then return end
+        if not crate then return false end
 
         local mul = tonumber(AA1.state.HeightMul) or 2.0
         if mul < 0.2 then mul = 0.2 end
 
-        -- วางเหนือ InnerTouchZone แล้ว “ปล่อยตกลง”
         local up = zone.Size.Y * mul
         local targetPos = zone.Position + Vector3.new(0, up, 0)
 
         local pp = ensurePrimaryPart(crate)
         local rot = (pp and pp.CFrame.Rotation) or crate:GetPivot().Rotation
 
-        pcall(function()
-            -- ปลด Anchor ก่อน เพื่อให้ตกจริง
+        local ok = pcall(function()
+            -- ปลด Anchor เพื่อให้ตก
             setModelAnchored(crate, false)
             zeroVel(crate)
             crate:PivotTo(CFrame.new(targetPos) * rot)
-            -- เคลียร์ vel อีกรอบหลังย้าย (กันพุ่งแปลกๆ)
             zeroVel(crate)
         end)
+
+        return ok == true
     end
 
     local function runner()
@@ -979,11 +982,11 @@ do
 
         task.spawn(function()
             while AA1.state.Enabled and token == my do
+                -- ✅ ทีละอันจริงๆ: วาง 1 อัน -> รอ DropWait -> ค่อยอันถัดไป
                 pcall(dropOneLogIntoFire)
 
-                local w = tonumber(AA1.state.LoopWait) or 0.10
-                local minW = tonumber(AA1.state.MinLoopWait) or 0.05
-                if w < minW then w = minW end
+                local w = tonumber(AA1.state.DropWait) or 1.35
+                if w < 0.2 then w = 0.2 end
                 task.wait(w)
             end
             running = false
@@ -997,12 +1000,11 @@ do
         emit()
 
         if v then
-            -- ✅ Row1 เปิด = บังคับเปิด Row2 + เลือก Log
+            -- Row1 เปิด = บังคับเปิด Row2 + เลือก Log
             if AA1_FUEL then
                 if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
                 if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
             end
-            -- สแกนคิวครั้งแรก
             rebuildQueue()
             runner()
         else
@@ -1010,14 +1012,18 @@ do
             running = false
         end
     end
+
     function AA1.getEnabled() return AA1.state.Enabled == true end
     function AA1.ensureRunner()
-        if AA1.getEnabled() then runner() end
+        if AA1.getEnabled() then
+            rebuildQueue()
+            runner()
+        end
     end
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- ✅ ถ้าเปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที
+    -- ถ้าเปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที
     task.defer(function()
         if AA1.getEnabled() then
             rebuildQueue()
@@ -1036,9 +1042,6 @@ registerRight("Home", function(scroll)
     local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_AutoRefill"]
     local AA1_ROW2 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
 
-    ------------------------------------------------------------------------
-    -- THEME + HELPERS (A V1)
-    ------------------------------------------------------------------------
     local THEME = {
         GREEN      = Color3.fromRGB(25,255,125),
         GREEN_DARK = Color3.fromRGB(0,120,60),
@@ -1058,9 +1061,6 @@ registerRight("Home", function(scroll)
     end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    ------------------------------------------------------------------------
-    -- CLEANUP เฉพาะของระบบนี้
-    ------------------------------------------------------------------------
     for _,n in ipairs({"CF_Header","CF_Row1","CF_Row2","CF_OptionsPanel"}) do
         local o = scroll:FindFirstChild(n)
             or scroll.Parent:FindFirstChild(n)
@@ -1069,9 +1069,6 @@ registerRight("Home", function(scroll)
         if o then o:Destroy() end
     end
 
-    ------------------------------------------------------------------------
-    -- UIListLayout (A V1)
-    ------------------------------------------------------------------------
     local list = scroll:FindFirstChildOfClass("UIListLayout")
     if not list then
         list = Instance.new("UIListLayout", scroll)
@@ -1087,9 +1084,6 @@ registerRight("Home", function(scroll)
         end
     end
 
-    ------------------------------------------------------------------------
-    -- HEADER
-    ------------------------------------------------------------------------
     local header = Instance.new("TextLabel")
     header.Name = "CF_Header"
     header.Parent = scroll
@@ -1102,9 +1096,6 @@ registerRight("Home", function(scroll)
     header.Text = "Auto Campfire 🔥"
     header.LayoutOrder = base + 1
 
-    ------------------------------------------------------------------------
-    -- Row Switch (A V1) helper
-    ------------------------------------------------------------------------
     local function makeRowSwitch(rowName, order, labelText, aa1Ref)
         local row = Instance.new("Frame")
         row.Name = rowName
@@ -1172,14 +1163,10 @@ registerRight("Home", function(scroll)
         return update, row
     end
 
-    ------------------------------------------------------------------------
-    -- Row1 (Switch)
-    ------------------------------------------------------------------------
+    -- Row1
     makeRowSwitch("CF_Row1", base + 2, "Auto Refill Campfire", AA1_ROW1)
 
-    ------------------------------------------------------------------------
-    -- Row2 (A V1 row + A V2 overlay button)
-    ------------------------------------------------------------------------
+    -- Row2 (A V1 row + A V2 overlay)
     local row2 = Instance.new("Frame")
     row2.Name = "CF_Row2"
     row2.Parent = scroll
