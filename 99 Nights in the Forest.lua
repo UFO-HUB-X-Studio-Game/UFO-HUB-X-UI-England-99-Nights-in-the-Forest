@@ -1414,740 +1414,317 @@ registerRight("Home", function(scroll)
         if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
     end)
 end)
---===== UFO HUB X • Home – Auto Rebirth (AA1 Runner + Model A V1 + A V2) =====
--- Logic main:
---   • ส่วน AA1 (ด้านบน) รันทันทีตอนโหลดสคริปต์ (ไม่ต้องกด Home)
---   • ส่วน UI (registerRight("Home")) แค่ sync ปุ่มกับ STATE ของ AA1
+--===== UFO HUB X • Home – Model A V1 + AA1 =====
+-- Header : "Auto Stand To Root 🧍"
+-- Row 1  : "Auto Stand To Root" (Switch / walk-only, no teleport)
+--
+-- Target:
+--   workspace.Truss1.Root  (Part)
 
 ----------------------------------------------------------------------
--- AA1 RUNNER (ไม่มี UI, ทำงานทันทีตอนรันสคริปต์)
+-- 0) AA1 MINI (generic + onChanged signal)
 ----------------------------------------------------------------------
 do
-    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    _G.UFOX_AA1 = _G.UFOX_AA1 or {}
 
-    ------------------------------------------------------------------
-    -- SAVE (AA1) ใช้ getgenv().UFOX_SAVE
-    ------------------------------------------------------------------
-    local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
-        get = function(_, _, d) return d end,
-        set = function() end,
-    }
+    local function makeAA1(systemName, defaultState)
+        local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
+            get = function(_, _, d) return d end,
+            set = function() end
+        }
 
-    local GAME_ID  = tonumber(game.GameId)  or 0
-    local PLACE_ID = tonumber(game.PlaceId) or 0
+        local GAME_ID  = tonumber(game.GameId)  or 0
+        local PLACE_ID = tonumber(game.PlaceId) or 0
+        local BASE_SCOPE = ("AA1/%s/%d/%d"):format(systemName, GAME_ID, PLACE_ID)
+        local function K(f) return BASE_SCOPE .. "/" .. f end
 
-    -- AA1/HomeAutoRebirth/<GAME>/<PLACE>/(Enabled|Mode|Amount)
-    local BASE_SCOPE = ("AA1/HomeAutoRebirth/%d/%d"):format(GAME_ID, PLACE_ID)
-
-    local function K(field)
-        return BASE_SCOPE .. "/" .. field
-    end
-
-    local function SaveGet(field, default)
-        local ok, v = pcall(function()
-            return SAVE.get(K(field), default)
-        end)
-        return ok and v or default
-    end
-
-    local function SaveSet(field, value)
-        pcall(function()
-            SAVE.set(K(field), value)
-        end)
-    end
-
-    ------------------------------------------------------------------
-    -- STATE จาก AA1
-    ------------------------------------------------------------------
-    local STATE = {
-        Enabled = SaveGet("Enabled", false),       -- เปิด Auto Rebirth อยู่ไหม
-        Mode    = SaveGet("Mode", "SEQUENCE"),     -- "SEQUENCE" หรือ "FIXED"
-        Amount  = SaveGet("Amount", 1),            -- 1–36
-    }
-
-    if type(STATE.Amount) ~= "number" or STATE.Amount < 1 or STATE.Amount > 36 then
-        STATE.Amount = 1
-        SaveSet("Amount", STATE.Amount)
-    end
-
-    if STATE.Mode ~= "FIXED" and STATE.Mode ~= "SEQUENCE" then
-        STATE.Mode = "SEQUENCE"
-        SaveSet("Mode", STATE.Mode)
-    end
-
-    ------------------------------------------------------------------
-    -- REMOTE: Rebirth
-    ------------------------------------------------------------------
-    local function getRebirthRemote()
-        local ok, rf = pcall(function()
-            local paper   = ReplicatedStorage:WaitForChild("Paper")
-            local remotes = paper:WaitForChild("Remotes")
-            return remotes:WaitForChild("__remotefunction")
-        end)
-        if not ok then
-            warn("[UFO HUB X • Auto Rebirth AA1] cannot get __remotefunction")
-            return nil
+        local function SaveGet(f, d)
+            local ok, v = pcall(function() return SAVE.get(K(f), d) end)
+            return ok and v or d
         end
-        return rf
-    end
+        local function SaveSet(f, v) pcall(function() SAVE.set(K(f), v) end) end
 
-    local function doRebirth(amount)
-        amount = math.clamp(math.floor(tonumber(amount) or 1), 1, 36)
-        local rf = getRebirthRemote()
-        if not rf then return end
-
-        local args = { "Rebirth", amount }
-        local ok, err = pcall(function()
-            rf:InvokeServer(unpack(args))
-        end)
-        if not ok then
-            warn("[UFO HUB X • Auto Rebirth AA1] Rebirth(",amount,") error:", err)
+        local STATE = {}
+        for k, v in pairs(defaultState or {}) do
+            STATE[k] = SaveGet(k, v)
         end
-    end
 
-    ------------------------------------------------------------------
-    -- LOOP AUTO REBIRTH (วิ่งจริงจาก STATE)
-    ------------------------------------------------------------------
-    local AUTO_INTERVAL = 0.03   -- เร็ว
-    local loopRunning   = false
-
-    local function startAutoLoop()
-        if loopRunning then return end
-        loopRunning = true
-
-        task.spawn(function()
-            while STATE.Enabled do
-                if STATE.Mode == "FIXED" then
-                    doRebirth(STATE.Amount)
-                    task.wait(AUTO_INTERVAL)
+        local listeners = {}
+        local function emit()
+            for i = #listeners, 1, -1 do
+                local cb = listeners[i]
+                if typeof(cb) == "function" then
+                    pcall(cb, STATE)
                 else
-                    for amt = 36, 1, -1 do
-                        if not STATE.Enabled then break end
-                        doRebirth(amt)
-                        task.wait(AUTO_INTERVAL)
+                    table.remove(listeners, i)
+                end
+            end
+        end
+
+        local obj = {
+            state = STATE,
+            saveGet = SaveGet,
+            saveSet = SaveSet,
+            onChanged = function(cb)
+                table.insert(listeners, cb)
+                return function()
+                    for i = #listeners, 1, -1 do
+                        if listeners[i] == cb then
+                            table.remove(listeners, i)
+                            break
+                        end
                     end
                 end
             end
-            loopRunning = false
+        }
+
+        return obj, SaveSet, emit
+    end
+
+    _G.__UFOX_MAKE_AA1 = makeAA1
+end
+
+----------------------------------------------------------------------
+-- 0.5) GLOBAL RUNNER STATE (anti-duplicate runners across re-run UI)
+----------------------------------------------------------------------
+_G.__UFOX_RUN_STATE = _G.__UFOX_RUN_STATE or {}
+
+----------------------------------------------------------------------
+-- 1) AA1 (GLOBAL) - Auto Stand To Root (walk only, no teleport)
+----------------------------------------------------------------------
+do
+    local SYSTEM_NAME = "Home_AutoStandToRoot"
+    local makeAA1 = _G.__UFOX_MAKE_AA1
+
+    local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
+        Enabled = false,
+        RepathEvery = 0.9,     -- รีสั่ง MoveTo เป็นระยะ กันยืนงง
+        StopRadius  = 4.0,     -- ใกล้ Root แค่ไหนถึงถือว่า “ถึง”
+    })
+
+    local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
+    if not RS then
+        RS = { token = 0, running = false }
+        _G.__UFOX_RUN_STATE[SYSTEM_NAME] = RS
+    end
+
+    local Players = game:GetService("Players")
+
+    local function getTargetRoot()
+        local truss = workspace:FindFirstChild("Truss1")
+        if not truss then return nil end
+        local root = truss:FindFirstChild("Root")
+        if root and root:IsA("BasePart") then return root end
+        return nil
+    end
+
+    local function getCharHum()
+        local plr = Players.LocalPlayer
+        local ch = plr and plr.Character
+        local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+        local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+        if hum and hrp and hum.Health > 0 then
+            return ch, hum, hrp
+        end
+        return nil
+    end
+
+    local function dist(a, b)
+        return (a - b).Magnitude
+    end
+
+    local function stopRunner()
+        RS.token += 1
+        RS.running = false
+    end
+
+    local function runner()
+        if RS.running or not AA1.state.Enabled then return end
+        RS.running = true
+        RS.token += 1
+        local my = RS.token
+
+        task.spawn(function()
+            while AA1.state.Enabled and RS.token == my do
+                local target = getTargetRoot()
+                local ch, hum, hrp = getCharHum()
+
+                if target and ch and hum and hrp then
+                    -- ✅ เดินเหมือนกดเดิน/ยืนเท่านั้น: ใช้ MoveTo (ไม่ตั้ง CFrame ไม่วาร์ป)
+                    local radius = tonumber(AA1.state.StopRadius) or 4.0
+                    if dist(hrp.Position, target.Position) > radius then
+                        pcall(function()
+                            hum:MoveTo(target.Position)
+                        end)
+                    else
+                        -- ใกล้แล้ว ก็ “ยืน” เฉยๆ (หยุดสั่ง MoveTo)
+                    end
+                end
+
+                local rp = tonumber(AA1.state.RepathEvery) or 0.9
+                if rp < 0.2 then rp = 0.2 end
+                task.wait(rp)
+            end
+            RS.running = false
         end)
     end
 
-    local function applyFromState()
-        if STATE.Enabled then
-            startAutoLoop()
+    function AA1.setEnabled(v)
+        v = v and true or false
+        AA1.state.Enabled = v
+        SaveSet("Enabled", v)
+        emit()
+
+        stopRunner()
+        if v then
+            runner()
         end
     end
+    function AA1.getEnabled() return AA1.state.Enabled == true end
+    function AA1.ensureRunner()
+        stopRunner()
+        if AA1.getEnabled() then runner() end
+    end
 
-    ------------------------------------------------------------------
-    -- EXPORT AA1 + AUTO-RUN ทันทีตอนโหลดสคริปต์หลัก
-    ------------------------------------------------------------------
-    _G.UFOX_AA1 = _G.UFOX_AA1 or {}
-    _G.UFOX_AA1["HomeAutoRebirth"] = {
-        state      = STATE,
-        apply      = applyFromState,
-        setEnabled = function(v)
-            STATE.Enabled = v and true or false
-            SaveSet("Enabled", STATE.Enabled)
-            applyFromState()
-        end,
-        setMode    = function(mode)
-            if mode ~= "FIXED" and mode ~= "SEQUENCE" then return end
-            STATE.Mode = mode
-            SaveSet("Mode", STATE.Mode)
-            applyFromState()
-        end,
-        setAmount  = function(amount)
-            STATE.Amount = math.clamp(math.floor(tonumber(amount) or 1), 1, 36)
-            SaveSet("Amount", STATE.Amount)
-        end,
-        saveGet    = SaveGet,
-        saveSet    = SaveSet,
-    }
+    _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- AA1: ถ้าเคยเปิดไว้ → รันเลย โดยไม่ต้องกด Home
+    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที (ไม่ซ้อน)
     task.defer(function()
-        applyFromState()
+        if AA1.getEnabled() then
+            AA1.ensureRunner()
+        end
     end)
 end
 
 ----------------------------------------------------------------------
--- UI PART: Model A V1 + Model A V2 ใน Tab Home (Sync กับ AA1 ตัวบน)
+-- 2) UI PART: Home (Model A V1) - Header + Row1 Switch
 ----------------------------------------------------------------------
-
 registerRight("Home", function(scroll)
-    local TweenService     = game:GetService("TweenService")
-    local UserInputService = game:GetService("UserInputService")
+    local TweenService = game:GetService("TweenService")
 
-    ------------------------------------------------------------------------
-    -- THEME + HELPERS
-    ------------------------------------------------------------------------
+    local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["Home_AutoStandToRoot"]
+
     local THEME = {
-        GREEN       = Color3.fromRGB(25,255,125),
-        GREEN_DARK  = Color3.fromRGB(0,120,60),
-        WHITE       = Color3.fromRGB(255,255,255),
-        BLACK       = Color3.fromRGB(0,0,0),
-        RED         = Color3.fromRGB(255,40,40),
+        GREEN      = Color3.fromRGB(25,255,125),
+        GREEN_DARK = Color3.fromRGB(0,120,60),
+        RED        = Color3.fromRGB(255,40,40),
+        WHITE      = Color3.fromRGB(255,255,255),
+        BLACK      = Color3.fromRGB(0,0,0),
     }
 
-    local function corner(ui, r)
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, r or 12)
-        c.Parent = ui
-        return c
-    end
-
-    local function stroke(ui, th, col)
-        local s = Instance.new("UIStroke")
-        s.Thickness = th or 2.2
-        s.Color = col or THEME.GREEN
+    local function corner(ui,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r or 12); c.Parent=ui end
+    local function stroke(ui,t,col)
+        local s=Instance.new("UIStroke")
+        s.Thickness=t or 2.2
+        s.Color=col or THEME.GREEN
         s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Parent = ui
+        s.Parent=ui
         return s
     end
+    local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    local function tween(o, p, d)
-        TweenService:Create(
-            o,
-            TweenInfo.new(d or 0.08, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
-            p
-        ):Play()
+    -- cleanup (เฉพาะของระบบนี้)
+    for _,n in ipairs({"ASR_Header","ASR_Row1"}) do
+        local o = scroll:FindFirstChild(n)
+        if o then o:Destroy() end
     end
 
-    local function trim(s)
-        return (s:gsub("^%s*(.-)%s*$", "%1"))
-    end
-
-    ------------------------------------------------------------------------
-    -- CONFIG: ปรับชื่อปุ่ม Rebirth 1–36 ได้จากตรงนี้
-    ------------------------------------------------------------------------
-    local REBIRTH_LABELS = {
-        [1] = "1 Rebirth",
-        [2] = "5 Rebirth",
-        [3] = "20 Rebirth",
-        [4] = "50 Rebirth",
-        [5] = "100 Rebirth",
-        [6] = "250 Rebirth",
-        [7] = "500 Rebirth",
-        [8] = "1K Rebirth",
-        [9] = "2.5K Rebirth",
-        [10] = "5K Rebirth",
-        [11] = "10K Rebirth",
-        [12] = "25K Rebirth",
-        [13] = "50K Rebirth",
-        [14] = "100K Rebirth",
-        [15] = "250K Rebirth",
-        [16] = "500K Rebirth",
-        [17] = "1M Rebirth",
-        [18] = "2.5M Rebirth",
-        [19] = "10M Rebirth",
-        [20] = "25M Rebirth",
-        [21] = "100M Rebirth",
-        [22] = "1B Rebirth",
-        [23] = "50B Rebirth",
-        [24] = "500B Rebirth",
-        [25] = "5T Rebirth",
-        [26] = "100T Rebirth",
-        [27] = "1Qd Rebirth",
-        [28] = "50Qd Rebirth",
-        [29] = "500Qd Rebirth",
-        [30] = "2.5Qn Rebirth",
-        [31] = "50Qn Rebirth",
-        [32] = "500Qn Rebirth",
-        [33] = "5Sx Rebirth",
-        [34] = "100Sx Rebirth",
-        [35] = "1Sp Rebirth",
-        [36] = "50Sp Rebirth",
-    }
-
-    local function getRebirthLabel(amount)
-        return REBIRTH_LABELS[amount] or (tostring(amount) .. " Rebirth")
-    end
-
-    ------------------------------------------------------------------------
-    -- ดึง AA1 STATE (จากบล็อกด้านบน)
-    ------------------------------------------------------------------------
-    local AA1  = _G.UFOX_AA1 and _G.UFOX_AA1["HomeAutoRebirth"]
-    local STATE = (AA1 and AA1.state) or {
-        Enabled = false,
-        Mode    = "SEQUENCE",
-        Amount  = 1,
-    }
-
-    ------------------------------------------------------------------------
-    -- UIListLayout (Model A V1 Rule)
-    ------------------------------------------------------------------------
-    local vlist = scroll:FindFirstChildOfClass("UIListLayout")
-    if not vlist then
-        vlist = Instance.new("UIListLayout")
-        vlist.Parent = scroll
-        vlist.Padding   = UDim.new(0, 12)
-        vlist.SortOrder = Enum.SortOrder.LayoutOrder
+    local list = scroll:FindFirstChildOfClass("UIListLayout")
+    if not list then
+        list = Instance.new("UIListLayout", scroll)
+        list.Padding = UDim.new(0,12)
+        list.SortOrder = Enum.SortOrder.LayoutOrder
     end
     scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 
+    -- dynamic LayoutOrder base = max + 1 (Model A V1 rule)
     local base = 0
-    for _, ch in ipairs(scroll:GetChildren()) do
-        if ch:IsA("GuiObject") and ch ~= vlist then
-            base = math.max(base, ch.LayoutOrder or 0)
+    for _,c in ipairs(scroll:GetChildren()) do
+        if c:IsA("GuiObject") and c ~= list then
+            base = math.max(base, c.LayoutOrder or 0)
         end
     end
 
-    ------------------------------------------------------------------------
-    -- HEADER: Auto Rebirth 🔁
-    ------------------------------------------------------------------------
+    -- Header (ขึ้นต้น Auto + emoji, English)
     local header = Instance.new("TextLabel")
-    header.Name = "A1_Home_AutoRebirth_Header"
+    header.Name = "ASR_Header"
     header.Parent = scroll
+    header.Size = UDim2.new(1,0,0,36)
     header.BackgroundTransparency = 1
-    header.Size = UDim2.new(1, 0, 0, 36)
     header.Font = Enum.Font.GothamBold
     header.TextSize = 16
     header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "》》》Auto Rebirth 🔁《《《"
+    header.Text = "Auto Stand To Root 🧍"
     header.LayoutOrder = base + 1
 
-    ------------------------------------------------------------------------
-    -- HELPERS: แถวสวิตช์ (Model A V1)
-    ------------------------------------------------------------------------
-    local function makeRowSwitch(name, order, labelText, initialOn, onToggle)
-        local row = Instance.new("Frame")
-        row.Name = name
-        row.Parent = scroll
-        row.Size = UDim2.new(1, -6, 0, 46)
-        row.BackgroundColor3 = THEME.BLACK
-        corner(row, 12)
-        stroke(row, 2.2, THEME.GREEN)
-        row.LayoutOrder = order
+    -- Row1 (ขึ้นต้น Auto, no emoji, English)
+    local row = Instance.new("Frame")
+    row.Name = "ASR_Row1"
+    row.Parent = scroll
+    row.Size = UDim2.new(1,-6,0,46)
+    row.BackgroundColor3 = THEME.BLACK
+    corner(row,12)
+    stroke(row,2.2,THEME.GREEN)
+    row.LayoutOrder = base + 2
 
-        local lab = Instance.new("TextLabel")
-        lab.Parent = row
-        lab.BackgroundTransparency = 1
-        lab.Size = UDim2.new(1, -160, 1, 0)
-        lab.Position = UDim2.new(0, 16, 0, 0)
-        lab.Font = Enum.Font.GothamBold
-        lab.TextSize = 13
-        lab.TextColor3 = THEME.WHITE
-        lab.TextXAlignment = Enum.TextXAlignment.Left
-        lab.Text = labelText
+    local lab = Instance.new("TextLabel", row)
+    lab.BackgroundTransparency = 1
+    lab.Position = UDim2.new(0,16,0,0)
+    lab.Size = UDim2.new(1,-160,1,0)
+    lab.Font = Enum.Font.GothamBold
+    lab.TextSize = 13
+    lab.TextColor3 = THEME.WHITE
+    lab.TextXAlignment = Enum.TextXAlignment.Left
+    lab.Text = "Auto Stand To Root"
 
-        local sw = Instance.new("Frame")
-        sw.Parent = row
-        sw.AnchorPoint = Vector2.new(1,0.5)
-        sw.Position = UDim2.new(1, -12, 0.5, 0)
-        sw.Size = UDim2.fromOffset(52,26)
-        sw.BackgroundColor3 = THEME.BLACK
-        corner(sw, 13)
+    local sw = Instance.new("Frame", row)
+    sw.AnchorPoint = Vector2.new(1,0.5)
+    sw.Position = UDim2.new(1,-12,0.5,0)
+    sw.Size = UDim2.fromOffset(52,26)
+    sw.BackgroundColor3 = THEME.BLACK
+    corner(sw,13)
 
-        local swStroke = Instance.new("UIStroke")
-        swStroke.Parent = sw
-        swStroke.Thickness = 1.8
+    local st = Instance.new("UIStroke", sw)
+    st.Thickness = 1.8
 
-        local knob = Instance.new("Frame")
-        knob.Parent = sw
-        knob.Size = UDim2.fromOffset(22,22)
-        knob.BackgroundColor3 = THEME.WHITE
-        knob.Position = UDim2.new(0,2,0.5,-11)
-        corner(knob,11)
+    local knob = Instance.new("Frame", sw)
+    knob.Size = UDim2.fromOffset(22,22)
+    knob.Position = UDim2.new(0,2,0.5,-11)
+    knob.BackgroundColor3 = THEME.WHITE
+    corner(knob,11)
 
-        local currentOn = initialOn and true or false
-
-        local function updateVisual(on)
-            currentOn = on
-            swStroke.Color = on and THEME.GREEN or THEME.RED
-            tween(knob, { Position = UDim2.new(on and 1 or 0, on and -24 or 2, 0.5, -11) }, 0.08)
-        end
-
-        local function setState(on, fireCallback)
-            fireCallback = (fireCallback ~= false)
-            if currentOn == on then return end
-            updateVisual(on)
-            if fireCallback and onToggle then onToggle(on) end
-        end
-
-        local btn = Instance.new("TextButton")
-        btn.Parent = sw
-        btn.BackgroundTransparency = 1
-        btn.Size = UDim2.fromScale(1,1)
-        btn.Text = ""
-        btn.AutoButtonColor = false
-        btn.MouseButton1Click:Connect(function()
-            setState(not currentOn, true)
-        end)
-
-        updateVisual(currentOn)
-
-        return { row = row, setState = setState, getState = function() return currentOn end }
+    local function update(on)
+        st.Color = on and THEME.GREEN or THEME.RED
+        tween(knob,{ Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11) })
     end
 
-    ------------------------------------------------------------------------
-    -- Row1: Auto Rebirth
-    ------------------------------------------------------------------------
-    local autoRebirthRow = makeRowSwitch(
-        "A1_Home_AutoRebirth",
-        base + 2,
-        "Auto Rebirth",
-        STATE.Enabled,
-        function(state)
-            if AA1 and AA1.setEnabled then
-                AA1.setEnabled(state)
-            end
+    local btn = Instance.new("TextButton", sw)
+    btn.Size = UDim2.fromScale(1,1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
+
+    btn.MouseButton1Click:Connect(function()
+        local cur = (AA1_ROW1 and AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false
+        local v = not cur
+        if AA1_ROW1 and AA1_ROW1.setEnabled then
+            AA1_ROW1.setEnabled(v)
+            if v and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
         end
-    )
-
-    ------------------------------------------------------------------------
-    -- Model A V2 PART: Row + Select Options + Panel
-    ------------------------------------------------------------------------
-    local panelParent = scroll.Parent
-    local amountPanel
-    local inputConn
-    local opened = false
-
-    local amountButtons = {}
-    local allButtons    = {}
-
-    -- ✅ เก็บ ref ของปุ่ม Select เพื่อให้ closeAmountPanel() ดับไฟได้เสมอ
-    local selectBtnRef
-
-    local function disconnectInput()
-        if inputConn then
-            inputConn:Disconnect()
-            inputConn = nil
-        end
-    end
-
-    -- ✅ Visual ของปุ่ม Select (เหมือน V A2)
-    local selectStrokeRef
-    local function updateSelectVisual(isOpen)
-        if not selectStrokeRef then return end
-        if isOpen then
-            selectStrokeRef.Color        = THEME.GREEN
-            selectStrokeRef.Thickness    = 2.4
-            selectStrokeRef.Transparency = 0
-        else
-            selectStrokeRef.Color        = THEME.GREEN_DARK
-            selectStrokeRef.Thickness    = 1.8
-            selectStrokeRef.Transparency = 0.4
-        end
-    end
-
-    -- ✅ ปิดแบบศูนย์กลาง: ปิด panel + ดับไฟ + opened=false (แก้บั๊กค้างไฟเขียว)
-    local function closeAmountPanel()
-        if amountPanel then
-            amountPanel:Destroy()
-            amountPanel = nil
-        end
-        disconnectInput()
-        amountButtons = {}
-        allButtons    = {}
-        opened = false
-
-        updateSelectVisual(false)
-    end
-
-    local function destroyAmountPanel()
-        closeAmountPanel()
-    end
-
-    local function updateAmountHighlight()
-        for amt, info in pairs(amountButtons) do
-            local on = (STATE.Mode == "FIXED" and STATE.Amount == amt)
-            if on then
-                info.stroke.Color        = THEME.GREEN
-                info.stroke.Thickness    = 2.4
-                info.stroke.Transparency = 0
-                info.glow.Visible        = true
-            else
-                info.stroke.Color        = THEME.GREEN_DARK
-                info.stroke.Thickness    = 1.6
-                info.stroke.Transparency = 0.4
-                info.glow.Visible        = false
-            end
-        end
-    end
-
-    local function openAmountPanel()
-        destroyAmountPanel()
-        if not panelParent or not panelParent.AbsoluteSize then return end
-
-        local pw, ph = panelParent.AbsoluteSize.X, panelParent.AbsoluteSize.Y
-        local leftRatio   = 0.645
-        local topRatio    = 0.02
-        local bottomRatio = 0.02
-        local rightMargin = 8
-
-        local leftX   = math.floor(pw * leftRatio)
-        local topY    = math.floor(ph * topRatio)
-        local bottomM = math.floor(ph * bottomRatio)
-
-        local w = pw - leftX - rightMargin
-        local h = ph - topY - bottomM
-
-        amountPanel = Instance.new("Frame")
-        amountPanel.Name = "VA2_RebirthPanel"
-        amountPanel.Parent = panelParent
-        amountPanel.BackgroundColor3 = THEME.BLACK
-        amountPanel.ClipsDescendants = true
-        amountPanel.AnchorPoint = Vector2.new(0, 0)
-        amountPanel.Position    = UDim2.new(0, leftX, 0, topY)
-        amountPanel.Size        = UDim2.new(0, w, 0, h)
-        amountPanel.ZIndex      = 50
-
-        corner(amountPanel, 12)
-        stroke(amountPanel, 2.4, THEME.GREEN)
-
-        local body = Instance.new("Frame")
-        body.Name = "Body"
-        body.Parent = amountPanel
-        body.BackgroundTransparency = 1
-        body.BorderSizePixel = 0
-        body.Position = UDim2.new(0, 4, 0, 4)
-        body.Size     = UDim2.new(1, -8, 1, -8)
-        body.ZIndex   = amountPanel.ZIndex + 1
-
-        local searchBox = Instance.new("TextBox")
-        searchBox.Name = "SearchBox"
-        searchBox.Parent = body
-        searchBox.BackgroundColor3 = THEME.BLACK
-        searchBox.ClearTextOnFocus = false
-        searchBox.Font = Enum.Font.GothamBold
-        searchBox.TextSize = 14
-        searchBox.TextColor3 = THEME.WHITE
-        searchBox.PlaceholderText = "🔍 Search"
-        searchBox.TextXAlignment = Enum.TextXAlignment.Center
-        searchBox.Text = ""
-        searchBox.ZIndex = body.ZIndex + 1
-        searchBox.Size = UDim2.new(1, 0, 0, 32)
-        searchBox.Position = UDim2.new(0, 0, 0, 0)
-        corner(searchBox, 8)
-
-        local sbStroke = stroke(searchBox, 1.8, THEME.GREEN)
-        sbStroke.ZIndex = searchBox.ZIndex + 1
-
-        local listHolder = Instance.new("ScrollingFrame")
-        listHolder.Name = "AmountList"
-        listHolder.Parent = body
-        listHolder.BackgroundColor3 = THEME.BLACK
-        listHolder.BorderSizePixel = 0
-        listHolder.ScrollBarThickness = 0
-        listHolder.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        listHolder.CanvasSize = UDim2.new(0,0,0,0)
-        listHolder.ZIndex = body.ZIndex + 1
-        listHolder.ScrollingDirection = Enum.ScrollingDirection.Y
-        listHolder.ClipsDescendants = true
-
-        local listTopOffset = 32 + 10
-        listHolder.Position = UDim2.new(0, 0, 0, listTopOffset)
-        listHolder.Size     = UDim2.new(1, 0, 1, -(listTopOffset + 4))
-
-        local listLayout = Instance.new("UIListLayout")
-        listLayout.Parent = listHolder
-        listLayout.Padding = UDim.new(0, 8)
-        listLayout.SortOrder = Enum.SortOrder.LayoutOrder
-        listLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-
-        local listPadding = Instance.new("UIPadding")
-        listPadding.Parent = listHolder
-        listPadding.PaddingTop = UDim.new(0, 6)
-        listPadding.PaddingBottom = UDim.new(0, 6)
-        listPadding.PaddingLeft = UDim.new(0, 4)
-        listPadding.PaddingRight = UDim.new(0, 4)
-
-        local locking = false
-        listHolder:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
-            if locking then return end
-            locking = true
-            local pos = listHolder.CanvasPosition
-            if pos.X ~= 0 then
-                listHolder.CanvasPosition = Vector2.new(0, pos.Y)
-            end
-            locking = false
-        end)
-
-        amountButtons = {}
-        allButtons    = {}
-
-        local function makeGlowButton(amount)
-            local label = getRebirthLabel(amount)
-
-            local btn = Instance.new("TextButton")
-            btn.Name = "Btn_Rebirth_" .. tostring(amount)
-            btn.Parent = listHolder
-            btn.Size = UDim2.new(1, 0, 0, 28)
-            btn.BackgroundColor3 = THEME.BLACK
-            btn.AutoButtonColor = false
-            btn.Font = Enum.Font.GothamBold
-            btn.TextSize = 14
-            btn.TextColor3 = THEME.WHITE
-            btn.Text = label
-            btn.ZIndex = listHolder.ZIndex + 1
-            btn.TextXAlignment = Enum.TextXAlignment.Center
-            btn.TextYAlignment = Enum.TextYAlignment.Center
-            corner(btn, 6)
-
-            local st = stroke(btn, 1.6, THEME.GREEN_DARK)
-            st.Transparency = 0.4
-
-            local glowBar = Instance.new("Frame")
-            glowBar.Name = "GlowBar"
-            glowBar.Parent = btn
-            glowBar.BackgroundColor3 = THEME.GREEN
-            glowBar.BorderSizePixel = 0
-            glowBar.Size = UDim2.new(0, 3, 1, 0)
-            glowBar.Position = UDim2.new(0, 0, 0, 0)
-            glowBar.ZIndex = btn.ZIndex + 1
-            glowBar.Visible = false
-
-            amountButtons[amount] = { button = btn, stroke = st, glow = glowBar }
-            table.insert(allButtons, btn)
-
-            btn.MouseButton1Click:Connect(function()
-                if not AA1 then return end
-
-                if STATE.Mode == "FIXED" and STATE.Amount == amount then
-                    AA1.setMode("SEQUENCE")
-                    updateAmountHighlight()
-                    AA1.apply()
-                    return
-                end
-
-                AA1.setAmount(amount)
-                AA1.setMode("FIXED")
-                updateAmountHighlight()
-                AA1.apply()
-            end)
-
-            return btn
-        end
-
-        for amt = 1, 36 do
-            local b = makeGlowButton(amt)
-            b.LayoutOrder = amt
-        end
-
-        updateAmountHighlight()
-
-        local function applySearch()
-            local q = trim(searchBox.Text or "")
-            q = string.lower(q)
-
-            if q == "" then
-                for _, btn in ipairs(allButtons) do btn.Visible = true end
-            else
-                for _, btn in ipairs(allButtons) do
-                    local text = string.lower(btn.Text or "")
-                    btn.Visible = string.find(text, q, 1, true) ~= nil
-                end
-            end
-
-            listHolder.CanvasPosition = Vector2.new(0, 0)
-        end
-
-        searchBox:GetPropertyChangedSignal("Text"):Connect(applySearch)
-        searchBox.Focused:Connect(function() sbStroke.Color = THEME.GREEN end)
-        searchBox.FocusLost:Connect(function() sbStroke.Color = THEME.GREEN end)
-
-        -- ✅ กดนอกจอ = ปิด + ดับไฟปุ่ม (ไม่ค้างแล้ว)
-        inputConn = UserInputService.InputBegan:Connect(function(input)
-            if not amountPanel then return end
-            if input.UserInputType ~= Enum.UserInputType.MouseButton1
-               and input.UserInputType ~= Enum.UserInputType.Touch then
-                return
-            end
-
-            local pos = input.Position
-            local op  = amountPanel.AbsolutePosition
-            local os  = amountPanel.AbsoluteSize
-
-            local inside =
-                pos.X >= op.X and pos.X <= op.X + os.X and
-                pos.Y >= op.Y and pos.Y <= op.Y + os.Y
-
-            if not inside then
-                closeAmountPanel()
-            end
-        end)
-    end
-
-    ------------------------------------------------------------------------
-    -- Row2: แถว + ปุ่ม Select Options (โมเดล A V2 เป๊ะ)
-    ------------------------------------------------------------------------
-    local row2 = Instance.new("Frame")
-    row2.Name = "VA2_Rebirth_Row"
-    row2.Parent = scroll
-    row2.Size = UDim2.new(1, -6, 0, 46)
-    row2.BackgroundColor3 = THEME.BLACK
-    corner(row2, 12)
-    stroke(row2, 2.2, THEME.GREEN)
-    row2.LayoutOrder = base + 3
-
-    local lab2 = Instance.new("TextLabel")
-    lab2.Parent = row2
-    lab2.BackgroundTransparency = 1
-    lab2.Size = UDim2.new(0, 180, 1, 0)
-    lab2.Position = UDim2.new(0, 16, 0, 0)
-    lab2.Font = Enum.Font.GothamBold
-    lab2.TextSize = 13
-    lab2.TextColor3 = THEME.WHITE
-    lab2.TextXAlignment = Enum.TextXAlignment.Left
-    lab2.Text = "Select Rebirth Amount"
-
-    local selectBtn = Instance.new("TextButton")
-    selectBtnRef = selectBtn
-
-    selectBtn.Name = "VA2_Rebirth_Select"
-    selectBtn.Parent = row2
-    selectBtn.AnchorPoint = Vector2.new(1, 0.5)
-    selectBtn.Position = UDim2.new(1, -16, 0.5, 0)
-    selectBtn.Size = UDim2.new(0, 220, 0, 28)
-    selectBtn.BackgroundColor3 = THEME.BLACK
-    selectBtn.AutoButtonColor = false
-    selectBtn.Text = "🔍 Select Options"
-    selectBtn.Font = Enum.Font.GothamBold
-    selectBtn.TextSize = 13
-    selectBtn.TextColor3 = THEME.WHITE
-    selectBtn.TextXAlignment = Enum.TextXAlignment.Center
-    selectBtn.TextYAlignment = Enum.TextYAlignment.Center
-    corner(selectBtn, 8)
-
-    local selectStroke = stroke(selectBtn, 1.8, THEME.GREEN_DARK)
-    selectStroke.Transparency = 0.4
-    selectStrokeRef = selectStroke
-
-    updateSelectVisual(false)
-
-    local padding = Instance.new("UIPadding")
-    padding.Parent = selectBtn
-    padding.PaddingLeft  = UDim.new(0, 8)
-    padding.PaddingRight = UDim.new(0, 26)
-
-    local arrow = Instance.new("TextLabel")
-    arrow.Parent = selectBtn
-    arrow.AnchorPoint = Vector2.new(1,0.5)
-    arrow.Position = UDim2.new(1, -6, 0.5, 0)
-    arrow.Size = UDim2.new(0, 18, 0, 18)
-    arrow.BackgroundTransparency = 1
-    arrow.Font = Enum.Font.GothamBold
-    arrow.TextSize = 18
-    arrow.TextColor3 = THEME.WHITE
-    arrow.Text = "▼"
-
-    selectBtn.MouseButton1Click:Connect(function()
-        if opened then
-            closeAmountPanel() -- ✅ ปิดแบบดับไฟ
-        else
-            openAmountPanel()
-            opened = true
-            updateSelectVisual(true)
-        end
-        print("[V A2 • Rebirth] Select Options clicked, opened =", opened)
+        update(v)
     end)
 
-    ------------------------------------------------------------------------
-    -- Sync UI จาก STATE ที่เซฟไว้ (ตอนเปิด Tab Home)
-    ------------------------------------------------------------------------
+    if AA1_ROW1 and AA1_ROW1.onChanged then
+        AA1_ROW1.onChanged(function()
+            update((AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false)
+        end)
+    end
+
+    update((AA1_ROW1 and AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false)
+
     task.defer(function()
-        autoRebirthRow.setState(STATE.Enabled, false)
+        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
     end)
 end) 
 --===== UFO HUB X • Home – Auto Claim Rewards 🎁 (Model A V1 + AA1 • PERMA LOOPS) =====
