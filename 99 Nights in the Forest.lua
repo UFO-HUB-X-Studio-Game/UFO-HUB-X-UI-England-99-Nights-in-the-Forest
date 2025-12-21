@@ -710,13 +710,8 @@ registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one)
+-- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one, SAFE ON RE-RUN)
 -- Row 2  : "Select Fuel" (Model A V2 Overlay / 1 button: "Log" toggle)
---
--- Campfire:
---   workspace.Map.Campground.MainFire.InnerTouchZone
--- Logs:
---   workspace.Items (Model) with: Main + "Meshes/log_Cylinder"
 
 ----------------------------------------------------------------------
 -- 0) AA1 MINI (generic + onChanged signal)
@@ -821,7 +816,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (STRICT one-by-one, SIMPLE DROP)
+-- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (TRUE one-by-one with "in-flight" lock)
 ----------------------------------------------------------------------
 do
     local SYSTEM_NAME = "Campfire_AutoRefill"
@@ -829,22 +824,24 @@ do
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
-        HeightMul   = 2.0,  -- สูง 2 เท่าเหนือ InnerTouchZone
-        DropWait    = 1.35, -- 1 อัน/รอบ
+        HeightMul   = 2.0,   -- สูง 2 เท่าเหนือ InnerTouchZone
+        DropWait    = 1.35,  -- หน่วงหลัง “เห็นว่าลงแล้ว” (ไม่ใช่หน่วงแทนการตก)
         RescanEvery = 2.0,
         Cooldown    = 8.0,
         RetryWait   = 0.5,
 
-        -- ✅ กันค้างแบบ “ไม้ปกติ”
-        DownVel     = 6.5,  -- ใส่ความเร็วลงนิดเดียวครั้งเดียว
-        NudgeXZ     = 0.9,  -- ขยับ XZ นิดนึงกันค้างจุดเดิมเป๊ะๆ
+        -- ✅ กันค้างตอนเปิดใหม่
+        DownVel     = 8,     -- ใส่ความเร็วลงเบาๆ
+        NudgeXZ     = 1.1,   -- ขยับ X/Z กันค้างตำแหน่งเดิมเป๊ะ
+        WaitFallMax = 2.2,   -- รอให้ “ลงจริง” สูงสุดกี่วิ ก่อนถือว่าโอเค
+        MinDropWait = 0.35,  -- กันค่า Save เดิมที่ต่ำจนรัว
     })
 
     local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
 
     local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
     if not RS then
-        RS = { token = 0, running = false }
+        RS = { token = 0, running = false, inFlight = false }
         _G.__UFOX_RUN_STATE[SYSTEM_NAME] = RS
     end
 
@@ -895,6 +892,14 @@ do
                 end)
             end
         end
+    end
+
+    local function pushDownOnce(pp, vel)
+        if not pp or not pp.Parent then return end
+        pcall(function()
+            pp.Anchored = false
+            pp.AssemblyLinearVelocity = Vector3.new(0, -math.abs(vel or 8), 0)
+        end)
     end
 
     local function canFeedNow()
@@ -952,7 +957,31 @@ do
         return nil
     end
 
-    -- ✅ “เอามาไว้บนไฟ แล้วปล่อยตกทันที” แบบไม้ปกติ
+    -- ✅ key fix: หลังวาง ต้อง "รอจนลงจริง" ก่อนอนุญาตอันต่อไป
+    local function waitUntilDropped(zone, pp)
+        if not zone or not pp or not pp.Parent then return end
+
+        local topY = zone.Position.Y + (zone.Size.Y * 0.45) -- ระดับ “บนๆของโซน”
+        local t0 = os.clock()
+        local maxT = tonumber(AA1.state.WaitFallMax) or 2.2
+        local vel = tonumber(AA1.state.DownVel) or 8
+
+        -- ใส่แรงลง 1 ครั้งทันที กันค้างตอนเปิดใหม่
+        pushDownOnce(pp, vel)
+
+        while (os.clock() - t0) < maxT do
+            task.wait(0.05)
+            if not pp.Parent then return end
+            if pp.Position.Y < topY then
+                return -- ✅ ถือว่าลงจริงแล้ว
+            end
+            -- ถ้ายังลอยนิ่ง ให้ดันลงเบาๆอีกนิด (ไม่สแปม)
+            if math.fmod((os.clock() - t0), 0.35) < 0.06 then
+                pushDownOnce(pp, vel)
+            end
+        end
+    end
+
     local function dropOneLogIntoFire()
         local zone = getInnerTouchZone()
         if not zone then return false end
@@ -964,38 +993,40 @@ do
         local mul = tonumber(AA1.state.HeightMul) or 2.0
         if mul < 0.2 then mul = 0.2 end
 
-        local up = zone.Size.Y * mul
-        local nudge = tonumber(AA1.state.NudgeXZ) or 0.9
+        local nudge = tonumber(AA1.state.NudgeXZ) or 1.1
         local dx = (math.random() - 0.5) * 2 * nudge
         local dz = (math.random() - 0.5) * 2 * nudge
 
+        local up = zone.Size.Y * mul
         local targetPos = zone.Position + Vector3.new(dx, up, dz)
 
         local pp = ensurePrimaryPart(crate)
         local rot = (pp and pp.CFrame.Rotation) or crate:GetPivot().Rotation
 
         local ok = pcall(function()
-            -- ปลด anchor + เคลียร์ vel
             setModelAnchored(crate, false)
             zeroVel(crate)
-
-            -- ย้ายขึ้นไปเหนือไฟ
             crate:PivotTo(CFrame.new(targetPos) * rot)
-
-            -- ปล่อยตก “ทันที” แบบไม้ปกติ: ใส่ความเร็วลงนิดเดียวครั้งเดียว
             zeroVel(crate)
-            if pp and pp.Parent then
-                local v = tonumber(AA1.state.DownVel) or 6.5
-                pp.AssemblyLinearVelocity = Vector3.new(0, -math.abs(v), 0)
-            end
         end)
+        if not ok then return false end
 
-        return ok == true
+        -- ✅ ล็อก 1 อัน: รอจน "ลงจริง" ก่อน
+        waitUntilDropped(zone, pp)
+
+        -- หน่วงเพิ่มนิดเพื่อความเนียน (กันค่า Save เดิมที่ต่ำจนรัว)
+        local w = tonumber(AA1.state.DropWait) or 1.35
+        local minW = tonumber(AA1.state.MinDropWait) or 0.35
+        if w < minW then w = minW end
+        task.wait(w)
+
+        return true
     end
 
     local function stopRunner()
         RS.token += 1
         RS.running = false
+        RS.inFlight = false
     end
 
     local function runner()
@@ -1007,10 +1038,13 @@ do
         task.spawn(function()
             while AA1.state.Enabled and RS.token == my do
                 if canFeedNow() then
-                    pcall(dropOneLogIntoFire)
-                    local w = tonumber(AA1.state.DropWait) or 1.35
-                    if w < 0.2 then w = 0.2 end
-                    task.wait(w)
+                    -- ✅ กันซ้อนจริงๆ
+                    if not RS.inFlight then
+                        RS.inFlight = true
+                        pcall(dropOneLogIntoFire)
+                        RS.inFlight = false
+                    end
+                    task.wait(0.05)
                 else
                     local rw = tonumber(AA1.state.RetryWait) or 0.5
                     if rw < 0.1 then rw = 0.1 end
@@ -1018,6 +1052,7 @@ do
                 end
             end
             RS.running = false
+            RS.inFlight = false
         end)
     end
 
@@ -1028,7 +1063,6 @@ do
         emit()
 
         if v then
-            -- เปิด Row1 = บังคับเปิด Row2 + เลือก Log
             if AA1_FUEL then
                 if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
                 if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
@@ -1052,7 +1086,7 @@ do
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่ ให้เหมือนเดิมแบบ one-by-one (ไม่ซ้อน)
+    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่: ยัง “ทีละอัน” เพราะมี inFlight lock + waitUntilDropped
     task.defer(function()
         if AA1.getEnabled() then
             AA1.ensureRunner()
@@ -1358,6 +1392,7 @@ registerRight("Home", function(scroll)
 
             local pos = input.Position
             local px, py = pos.X, pos.Y
+
             local op = optionsPanel.AbsolutePosition
             local os = optionsPanel.AbsoluteSize
 
