@@ -782,6 +782,11 @@ do
 end
 
 ----------------------------------------------------------------------
+-- 0.5) GLOBAL RUNNER STATE (anti-duplicate runners across re-run UI)
+----------------------------------------------------------------------
+_G.__UFOX_RUN_STATE = _G.__UFOX_RUN_STATE or {}
+
+----------------------------------------------------------------------
 -- 1) AA1 (GLOBAL) - Row2: Fuel Selector (single option: Log)
 ----------------------------------------------------------------------
 do
@@ -789,7 +794,7 @@ do
     local makeAA1 = _G.__UFOX_MAKE_AA1
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
-        Enabled  = false,   -- toggle on/off
+        Enabled  = false,
         FuelName = "Log",
     })
 
@@ -826,17 +831,26 @@ do
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
         HeightMul   = 2.0,   -- สูง 2 เท่าเหนือ InnerTouchZone
-        DropWait    = 1.35,  -- ✅ สำคัญ: วาง 1 อัน -> รอให้ตก -> ค่อยอันถัดไป
-        RescanEvery = 2.0,   -- สแกนหาไม้ใหม่ทุกกี่วินาที
-        Cooldown    = 8.0,   -- กันหยิบอันเดิมซ้ำเร็วเกินไป
+        DropWait    = 1.35,  -- จังหวะหลัก: 1 อัน/รอบ
+        RescanEvery = 2.0,
+        Cooldown    = 8.0,
         RetryWait   = 0.5,
+
+        -- ✅ กัน “ค้างบนแล้วหล่นทีเดียว”
+        MustStartFallingWithin = 0.55, -- วินาที: ต้องเห็นว่าเริ่มตก
+        ForceDownVel           = 60,   -- velocity ลง (กรณีค้าง)
     })
 
     local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
 
-    local running, token = false, 0
-    local itemsFolder
+    -- ✅ shared runner state across re-executions
+    local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
+    if not RS then
+        RS = { token = 0, running = false }
+        _G.__UFOX_RUN_STATE[SYSTEM_NAME] = RS
+    end
 
+    local itemsFolder
     local function getItemsFolder()
         if itemsFolder and itemsFolder.Parent then return itemsFolder end
         local f = workspace:FindFirstChild("Items")
@@ -852,7 +866,6 @@ do
         return nil
     end
 
-    -- ตาม signature ที่มึงให้: มี Main + มี Meshes/log_Cylinder
     local function isLogCrateModel(m)
         if not m or not m:IsA("Model") then return false end
         local main = m:FindFirstChild("Main")
@@ -886,28 +899,36 @@ do
         end
     end
 
+    local function forcePushDown(m, vel)
+        for _, d in ipairs(m:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function()
+                    d.Anchored = false
+                    d.AssemblyLinearVelocity = Vector3.new(0, -math.abs(vel or 60), 0)
+                end)
+            end
+        end
+    end
+
     -- Queue + anti-repeat
     local queue = {}
     local qIndex = 1
     local lastScan = 0
-    local pickedAt = setmetatable({}, { __mode = "k" }) -- weak keys
+    local pickedAt = setmetatable({}, { __mode = "k" })
 
     local function rebuildQueue()
         local items = getItemsFolder()
-        if not items then
-            queue = {}
-            qIndex = 1
-            lastScan = os.clock()
-            return
-        end
-
         queue = {}
         qIndex = 1
-        for _, ch in ipairs(items:GetChildren()) do
-            if isLogCrateModel(ch) then
-                table.insert(queue, ch)
+
+        if items then
+            for _, ch in ipairs(items:GetChildren()) do
+                if isLogCrateModel(ch) then
+                    table.insert(queue, ch)
+                end
             end
         end
+
         lastScan = os.clock()
     end
 
@@ -939,17 +960,34 @@ do
         return nil
     end
 
-    local function dropOneLogIntoFire()
-        local zone = getInnerTouchZone()
-        if not zone then return false end
+    -- ✅ wait until it STARTS falling (fix: stuck above then drop many)
+    local function waitStartFalling(pp, seconds)
+        if not pp or not pp.Parent then return end
+        local t0 = os.clock()
+        local lastY = pp.Position.Y
+        while (os.clock() - t0) < (seconds or 0.55) do
+            task.wait(0.05)
+            if not pp.Parent then return end
+            local y = pp.Position.Y
+            if y < (lastY - 0.05) then
+                return -- started falling
+            end
+            lastY = y
+        end
+    end
 
-        -- ต้องเลือกเชื้อเพลิง (Row2 ON)
+    local function canFeedNow()
         if not (AA1_FUEL and AA1_FUEL.getEnabled and AA1_FUEL.getEnabled()) then
             return false
         end
-
         local fuel = (AA1_FUEL.getFuel and AA1_FUEL.getFuel()) or "Log"
-        if fuel ~= "Log" then return false end
+        return fuel == "Log"
+    end
+
+    local function dropOneLogIntoFire()
+        local zone = getInnerTouchZone()
+        if not zone then return false end
+        if not canFeedNow() then return false end
 
         local crate = nextLog()
         if not crate then return false end
@@ -964,32 +1002,53 @@ do
         local rot = (pp and pp.CFrame.Rotation) or crate:GetPivot().Rotation
 
         local ok = pcall(function()
-            -- ปลด Anchor เพื่อให้ตก
             setModelAnchored(crate, false)
             zeroVel(crate)
             crate:PivotTo(CFrame.new(targetPos) * rot)
             zeroVel(crate)
         end)
+        if not ok then return false end
 
-        return ok == true
+        -- ✅ ถ้าค้าง ให้ “เริ่มตก” ก่อน
+        local must = tonumber(AA1.state.MustStartFallingWithin) or 0.55
+        waitStartFalling(pp, must)
+
+        -- ยังไม่ตก -> ดันลง
+        if pp and pp.Parent then
+            local vel = tonumber(AA1.state.ForceDownVel) or 60
+            forcePushDown(crate, vel)
+        end
+
+        return true
+    end
+
+    local function stopRunner()
+        RS.token += 1
+        RS.running = false
     end
 
     local function runner()
-        if running or not AA1.state.Enabled then return end
-        running = true
-        token += 1
-        local my = token
+        if RS.running or not AA1.state.Enabled then return end
+        RS.running = true
+        RS.token += 1
+        local my = RS.token
 
         task.spawn(function()
-            while AA1.state.Enabled and token == my do
-                -- ✅ ทีละอันจริงๆ: วาง 1 อัน -> รอ DropWait -> ค่อยอันถัดไป
-                pcall(dropOneLogIntoFire)
-
-                local w = tonumber(AA1.state.DropWait) or 1.35
-                if w < 0.2 then w = 0.2 end
-                task.wait(w)
+            while AA1.state.Enabled and RS.token == my do
+                -- ✅ สำคัญ: กัน “รัวตอนเพิ่งเลือกไม้/โหลดครั้งแรก”
+                -- วางได้ต่อเมื่อเลือก Fuel อยู่จริง
+                if canFeedNow() then
+                    pcall(dropOneLogIntoFire)
+                    local w = tonumber(AA1.state.DropWait) or 1.35
+                    if w < 0.2 then w = 0.2 end
+                    task.wait(w)
+                else
+                    local rw = tonumber(AA1.state.RetryWait) or 0.5
+                    if rw < 0.1 then rw = 0.1 end
+                    task.wait(rw)
+                end
             end
-            running = false
+            RS.running = false
         end)
     end
 
@@ -1000,16 +1059,18 @@ do
         emit()
 
         if v then
-            -- Row1 เปิด = บังคับเปิด Row2 + เลือก Log
+            -- ✅ เปิด Row1 = บังคับเปิด Row2 + เลือก Log
             if AA1_FUEL then
                 if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
                 if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
             end
+
             rebuildQueue()
+            -- ✅ kill runner ซ้อนจากการรันสคริปต์ซ้ำ แล้วเริ่มใหม่ตัวเดียว
+            stopRunner()
             runner()
         else
-            token += 1
-            running = false
+            stopRunner()
         end
     end
 
@@ -1017,16 +1078,19 @@ do
     function AA1.ensureRunner()
         if AA1.getEnabled() then
             rebuildQueue()
+            -- ✅ ensure แบบปลอด runner ซ้อน
+            stopRunner()
             runner()
         end
     end
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- ถ้าเปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที
+    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที (แต่ไม่ซ้อน)
     task.defer(function()
         if AA1.getEnabled() then
             rebuildQueue()
+            stopRunner()
             runner()
         end
     end)
@@ -1263,7 +1327,6 @@ registerRight("Home", function(scroll)
         body.Size = UDim2.new(1,-8,1,-8)
         body.ZIndex = optionsPanel.ZIndex + 1
 
-        -- ปุ่มเดียว: Log (toggle)
         local logBtn = Instance.new("TextButton", body)
         logBtn.Name = "Btn_Log"
         logBtn.Size = UDim2.new(1,0,0,32)
@@ -1316,6 +1379,11 @@ registerRight("Home", function(scroll)
                 if AA1_ROW2.setEnabled then AA1_ROW2.setEnabled(v) end
             end
             updateLogVisual(v)
+
+            -- ✅ ถ้า Row1 เปิดอยู่ ให้ ensure ต่อ (แต่ไม่ซ้อน เพราะ runner มี global RS)
+            if AA1_ROW1 and AA1_ROW1.ensureRunner then
+                AA1_ROW1.ensureRunner()
+            end
         end)
 
         inputConn = UserInputService.InputBegan:Connect(function(input, gp)
