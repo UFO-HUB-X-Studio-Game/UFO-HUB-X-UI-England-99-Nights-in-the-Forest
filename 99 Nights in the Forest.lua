@@ -709,9 +709,8 @@ registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
--- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (switch)
--- Row 2  : "Select Fuel" (Model A V2 overlay + search, default "Log")
+-- Single Button (toggle):
+-- "Auto Refill Campfire"  -> move `Items` above `Model`
 
 ----------------------------------------------------------------------
 -- 0) AA1 MINI (generic + onChanged signal)
@@ -779,112 +778,101 @@ do
 end
 
 ----------------------------------------------------------------------
--- 1) AA1 (GLOBAL) - Fuel Selector State (shared)
+-- 1) AA1 RUNNER (GLOBAL) - Auto Refill Campfire (move Items above Model)
 ----------------------------------------------------------------------
 do
-    local SYSTEM_NAME = "Campfire_FuelSelector"
+    local SYSTEM_NAME = "Campfire_MoveItemsAboveModel"
     local makeAA1 = _G.__UFOX_MAKE_AA1
 
-    local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
-        SelectedFuel = "Log",   -- default
-        LastPickedAt = 0,
-    })
-
-    function AA1.setFuel(name)
-        name = tostring(name or "")
-        if name == "" then return end
-        AA1.state.SelectedFuel = name
-        AA1.state.LastPickedAt = os.time()
-        SaveSet("SelectedFuel", name)
-        SaveSet("LastPickedAt", AA1.state.LastPickedAt)
-        emit()
-    end
-
-    function AA1.getFuel()
-        local v = AA1.state.SelectedFuel
-        if typeof(v) ~= "string" or v == "" then v = "Log" end
-        return v
-    end
-
-    function AA1.ensureDefault()
-        if typeof(AA1.state.SelectedFuel) ~= "string" or AA1.state.SelectedFuel == "" then
-            AA1.setFuel("Log")
-        end
-    end
-
-    _G.UFOX_AA1[SYSTEM_NAME] = AA1
-    task.defer(function() AA1.ensureDefault() end)
-end
-
-----------------------------------------------------------------------
--- 2) AA1 RUNNER (GLOBAL) - Row1: Auto Refill Campfire (move fuel above InnerTouchZone)
-----------------------------------------------------------------------
-do
-    local Players = game:GetService("Players")
-    local LP = Players.LocalPlayer
-
-    local SYSTEM_NAME = "Campfire_AutoRefill"
-    local makeAA1 = _G.__UFOX_MAKE_AA1
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
-        LoopWait    = 0.35,  -- ปรับได้ (ยิ่งต่ำยิ่งรัว)
-        HeightMul   = 2.0,   -- สูง 2 เท่า
-        MinLoopWait = 0.08,
+        HeightMul   = 2.0,   -- "สูง 2 เท่า"
+        LoopWait    = 0.25,  -- รัวพอประมาณ (ปรับได้)
+        MinLoopWait = 0.06,
     })
 
-    local FuelAA1 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
+    local running, token = false, 0
 
-    local function getZone()
-        -- MainFire -> (Model campfire) -> InnerTouchZone
-        local main = workspace:FindFirstChild("MainFire")
-        if not main then return nil end
-        local zone = main:FindFirstChild("InnerTouchZone", true)
-        if zone and zone:IsA("BasePart") then
-            return zone
+    local function getTargetModel()
+        -- ตามที่บอก: "อยู่ใน MainFire แล้วก็อยู่ใน Model"
+        -- แต่คุณสั่งใหม่: "เอา Items ไปไว้ข้างบนที่ชื่อว่า Model"
+        -- เลยพยายามหา "Model" แบบกว้างสุดก่อน
+        local mainFire = workspace:FindFirstChild("MainFire")
+        if mainFire then
+            local m = mainFire:FindFirstChild("Model", true)
+            if m and m:IsA("Model") then return m end
+            if m and m:IsA("BasePart") then return m end
         end
+
+        local m2 = workspace:FindFirstChild("Model", true)
+        if m2 and (m2:IsA("Model") or m2:IsA("BasePart")) then return m2 end
         return nil
     end
 
-    local function findFuelInstance(fuelName)
+    local function getMovableFromItems()
         local items = workspace:FindFirstChild("Items")
         if not items then return nil end
-        -- prefer direct child
-        local direct = items:FindFirstChild(fuelName)
-        if direct then return direct end
-        -- fallback: search descendants
+
+        -- ถ้า Items เป็น Model/Part ขยับได้ตรงๆ
+        if items:IsA("Model") or items:IsA("BasePart") then
+            return items
+        end
+
+        -- ถ้า Items เป็น Folder/อย่างอื่น: หาอันที่ขยับได้ในลูกหลาน
         for _, d in ipairs(items:GetDescendants()) do
-            if d.Name == fuelName then
-                if d:IsA("Model") or d:IsA("BasePart") then
-                    return d
-                end
+            if d:IsA("Model") or d:IsA("BasePart") then
+                return d
             end
         end
+
         return nil
     end
 
-    local function pivotOrMove(obj, targetCFrame)
-        if not obj then return false end
+    local function getPivotCFrame(obj)
         if obj:IsA("Model") then
             if obj.PrimaryPart then
-                obj:PivotTo(targetCFrame)
-                return true
-            else
-                -- try set primary automatically
-                local pp = obj:FindFirstChildWhichIsA("BasePart", true)
-                if pp then
-                    pcall(function() obj.PrimaryPart = pp end)
-                    obj:PivotTo(targetCFrame)
-                    return true
-                end
+                return obj.PrimaryPart.CFrame, obj.PrimaryPart.Size.Y
             end
-        elseif obj:IsA("BasePart") then
-            obj.CFrame = targetCFrame
-            return true
+            local pp = obj:FindFirstChildWhichIsA("BasePart", true)
+            if pp then
+                pcall(function() obj.PrimaryPart = pp end)
+                return pp.CFrame, pp.Size.Y
+            end
+            return obj:GetPivot(), 4
+        else
+            return obj.CFrame, obj.Size.Y
         end
-        return false
     end
 
-    local running, token = false, 0
+    local function moveTo(obj, cf)
+        if obj:IsA("Model") then
+            pcall(function() obj:PivotTo(cf) end)
+        else
+            pcall(function() obj.CFrame = cf end)
+        end
+    end
+
+    local function stepOnce()
+        local mover = getMovableFromItems()
+        local target = getTargetModel()
+        if not mover or not target then
+            return
+        end
+
+        local targetCF, targetH = getPivotCFrame(target)
+        local mul = tonumber(AA1.state.HeightMul) or 2.0
+        if mul < 0.2 then mul = 0.2 end
+
+        -- เอาไปไว้ "ข้างบน Model" สูงตามขนาด Y ของ Model * mul
+        local up = (targetH or 4) * mul
+        local pos = targetCF.Position + Vector3.new(0, up, 0)
+
+        -- คงทิศทางเดิมของ mover ไว้ (เอาแค่ตำแหน่ง)
+        local moverCF = getPivotCFrame(mover)
+        local rot = (typeof(moverCF) == "CFrame") and moverCF.Rotation or CFrame.new().Rotation
+
+        moveTo(mover, CFrame.new(pos) * rot)
+    end
 
     local function runner()
         if running or not AA1.state.Enabled then return end
@@ -894,33 +882,9 @@ do
 
         task.spawn(function()
             while AA1.state.Enabled and token == my do
-                -- ensure selector default exists
-                if FuelAA1 and FuelAA1.ensureDefault then
-                    pcall(FuelAA1.ensureDefault)
-                end
-
-                local zone = getZone()
-                if zone then
-                    local fuelName = (FuelAA1 and FuelAA1.getFuel and FuelAA1.getFuel()) or "Log"
-                    local fuelObj = findFuelInstance(fuelName)
-
-                    if fuelObj then
-                        local mul = tonumber(AA1.state.HeightMul) or 2.0
-                        if mul < 0.2 then mul = 0.2 end
-
-                        -- "อยู่ข้างบนสูง 2 เท่า" -> ใช้ความสูงของ zone เป็นฐาน
-                        local baseH = (zone.Size and zone.Size.Y) or 3
-                        local offsetY = baseH * mul
-                        local target = zone.Position + Vector3.new(0, offsetY, 0)
-
-                        pcall(function()
-                            pivotOrMove(fuelObj, CFrame.new(target))
-                        end)
-                    end
-                end
-
-                local w = tonumber(AA1.state.LoopWait) or 0.35
-                local minW = tonumber(AA1.state.MinLoopWait) or 0.08
+                pcall(stepOnce)
+                local w = tonumber(AA1.state.LoopWait) or 0.25
+                local minW = tonumber(AA1.state.MinLoopWait) or 0.06
                 if w < minW then w = minW end
                 task.wait(w)
             end
@@ -933,12 +897,6 @@ do
         AA1.state.Enabled = v
         SaveSet("Enabled", v)
         emit()
-
-        -- Row1 ON -> ensure Row2 selector ready (default Log)
-        if v and FuelAA1 and FuelAA1.ensureDefault then
-            pcall(FuelAA1.ensureDefault)
-        end
-
         if v then
             runner()
         else
@@ -948,7 +906,9 @@ do
     end
 
     function AA1.getEnabled() return AA1.state.Enabled == true end
-    function AA1.ensureRunner() runner() end
+    function AA1.ensureRunner()
+        if AA1.getEnabled() then runner() end
+    end
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
     task.defer(function()
@@ -957,24 +917,17 @@ do
 end
 
 ----------------------------------------------------------------------
--- 3) UI PART: Model A V1 (Home) - Auto Campfire 🔥 (Row1 switch + Row2 Model A V2 select)
+-- 2) UI PART: Model A V1 (Home) - Single Toggle Button
 ----------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
-    local UserInputService = game:GetService("UserInputService")
+    local AA1 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_MoveItemsAboveModel"]
 
-    local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_AutoRefill"]
-    local AA1_SEL  = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
-
-    ------------------------------------------------------------------------
-    -- THEME + HELPERS (Model A V1)
-    ------------------------------------------------------------------------
     local THEME = {
-        GREEN      = Color3.fromRGB(25,255,125),
-        GREEN_DARK = Color3.fromRGB(0,120,60),
-        RED        = Color3.fromRGB(255,40,40),
-        WHITE      = Color3.fromRGB(255,255,255),
-        BLACK      = Color3.fromRGB(0,0,0),
+        GREEN = Color3.fromRGB(25,255,125),
+        RED   = Color3.fromRGB(255,40,40),
+        WHITE = Color3.fromRGB(255,255,255),
+        BLACK = Color3.fromRGB(0,0,0),
     }
 
     local function corner(ui,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r or 12); c.Parent=ui end
@@ -988,18 +941,12 @@ registerRight("Home", function(scroll)
     end
     local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
 
-    ------------------------------------------------------------------------
-    -- CLEANUP เฉพาะส่วนนี้
-    ------------------------------------------------------------------------
-    local panelParent = scroll.Parent
-    for _,n in ipairs({"CF_Header","CF_Row1","CF_Row2","CF_OptionsPanel"}) do
-        local o = scroll:FindFirstChild(n) or (panelParent and panelParent:FindFirstChild(n))
+    -- cleanup เฉพาะของระบบนี้
+    for _,n in ipairs({"CF_SingleRow"}) do
+        local o = scroll:FindFirstChild(n)
         if o then o:Destroy() end
     end
 
-    ------------------------------------------------------------------------
-    -- UIListLayout (Model A V1)
-    ------------------------------------------------------------------------
     local list = scroll:FindFirstChildOfClass("UIListLayout")
     if not list then
         list = Instance.new("UIListLayout", scroll)
@@ -1015,398 +962,73 @@ registerRight("Home", function(scroll)
         end
     end
 
-    ------------------------------------------------------------------------
-    -- HEADER
-    ------------------------------------------------------------------------
-    local header = Instance.new("TextLabel")
-    header.Name = "CF_Header"
-    header.Parent = scroll
-    header.Size = UDim2.new(1,0,0,36)
-    header.BackgroundTransparency = 1
-    header.Font = Enum.Font.GothamBold
-    header.TextSize = 16
-    header.TextColor3 = THEME.WHITE
-    header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Auto Campfire 🔥"
-    header.LayoutOrder = base + 1
+    local row = Instance.new("Frame")
+    row.Name = "CF_SingleRow"
+    row.Parent = scroll
+    row.Size = UDim2.new(1,-6,0,46)
+    row.BackgroundColor3 = THEME.BLACK
+    corner(row,12)
+    stroke(row,2.2,THEME.GREEN)
+    row.LayoutOrder = base + 1
 
-    ------------------------------------------------------------------------
-    -- Row Switch (Model A V1)
-    ------------------------------------------------------------------------
-    local function makeRowSwitch(rowName, order, labelText, aa1Ref)
-        local row = Instance.new("Frame")
-        row.Name = rowName
-        row.Parent = scroll
-        row.Size = UDim2.new(1,-6,0,46)
-        row.BackgroundColor3 = THEME.BLACK
-        corner(row,12)
-        stroke(row,2.2,THEME.GREEN)
-        row.LayoutOrder = order
+    local lab = Instance.new("TextLabel", row)
+    lab.BackgroundTransparency = 1
+    lab.Position = UDim2.new(0,16,0,0)
+    lab.Size = UDim2.new(1,-160,1,0)
+    lab.Font = Enum.Font.GothamBold
+    lab.TextSize = 13
+    lab.TextColor3 = THEME.WHITE
+    lab.TextXAlignment = Enum.TextXAlignment.Left
+    lab.Text = "Auto Refill Campfire"
 
-        local lab = Instance.new("TextLabel", row)
-        lab.BackgroundTransparency = 1
-        lab.Position = UDim2.new(0,16,0,0)
-        lab.Size = UDim2.new(1,-160,1,0)
-        lab.Font = Enum.Font.GothamBold
-        lab.TextSize = 13
-        lab.TextColor3 = THEME.WHITE
-        lab.TextXAlignment = Enum.TextXAlignment.Left
-        lab.Text = labelText
+    local sw = Instance.new("Frame", row)
+    sw.AnchorPoint = Vector2.new(1,0.5)
+    sw.Position = UDim2.new(1,-12,0.5,0)
+    sw.Size = UDim2.fromOffset(52,26)
+    sw.BackgroundColor3 = THEME.BLACK
+    corner(sw,13)
 
-        local sw = Instance.new("Frame", row)
-        sw.AnchorPoint = Vector2.new(1,0.5)
-        sw.Position = UDim2.new(1,-12,0.5,0)
-        sw.Size = UDim2.fromOffset(52,26)
-        sw.BackgroundColor3 = THEME.BLACK
-        corner(sw,13)
+    local st = Instance.new("UIStroke", sw)
+    st.Thickness = 1.8
 
-        local st = Instance.new("UIStroke", sw)
-        st.Thickness = 1.8
+    local knob = Instance.new("Frame", sw)
+    knob.Size = UDim2.fromOffset(22,22)
+    knob.Position = UDim2.new(0,2,0.5,-11)
+    knob.BackgroundColor3 = THEME.WHITE
+    corner(knob,11)
 
-        local knob = Instance.new("Frame", sw)
-        knob.Size = UDim2.fromOffset(22,22)
-        knob.Position = UDim2.new(0,2,0.5,-11)
-        knob.BackgroundColor3 = THEME.WHITE
-        corner(knob,11)
-
-        local function update(on)
-            st.Color = on and THEME.GREEN or THEME.RED
-            tween(knob,{ Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11) })
-        end
-
-        local btn = Instance.new("TextButton", sw)
-        btn.Size = UDim2.fromScale(1,1)
-        btn.BackgroundTransparency = 1
-        btn.Text = ""
-        btn.AutoButtonColor = false
-
-        btn.MouseButton1Click:Connect(function()
-            local cur = (aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false
-            local v = not cur
-            if aa1Ref and aa1Ref.setEnabled then
-                aa1Ref.setEnabled(v)
-                if v and aa1Ref.ensureRunner then aa1Ref.ensureRunner() end
-            end
-            update(v)
-        end)
-
-        if aa1Ref and aa1Ref.onChanged then
-            aa1Ref.onChanged(function()
-                update((aa1Ref.getEnabled and aa1Ref.getEnabled()) or false)
-            end)
-        end
-
-        update((aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false)
-        return update, row
+    local function update(on)
+        st.Color = on and THEME.GREEN or THEME.RED
+        tween(knob,{ Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11) })
     end
 
-    local set1 = makeRowSwitch("CF_Row1", base + 2, "Auto Refill Campfire", AA1_ROW1)
+    local btn = Instance.new("TextButton", sw)
+    btn.Size = UDim2.fromScale(1,1)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
 
-    ------------------------------------------------------------------------
-    -- Row2 (Model A V2 overlay selector) - Select Fuel (no emoji)
-    ------------------------------------------------------------------------
-    local row2 = Instance.new("Frame")
-    row2.Name = "CF_Row2"
-    row2.Parent = scroll
-    row2.Size = UDim2.new(1,-6,0,46)
-    row2.BackgroundColor3 = THEME.BLACK
-    corner(row2,12)
-    stroke(row2,2.2,THEME.GREEN)
-    row2.LayoutOrder = base + 3
-
-    local lab2 = Instance.new("TextLabel", row2)
-    lab2.BackgroundTransparency = 1
-    lab2.Position = UDim2.new(0,16,0,0)
-    lab2.Size = UDim2.new(1,-260,1,0)
-    lab2.Font = Enum.Font.GothamBold
-    lab2.TextSize = 13
-    lab2.TextColor3 = THEME.WHITE
-    lab2.TextXAlignment = Enum.TextXAlignment.Left
-    lab2.Text = "Select Fuel"
-
-    local selectBtn = Instance.new("TextButton")
-    selectBtn.Name = "CF_Select"
-    selectBtn.Parent = row2
-    selectBtn.AnchorPoint = Vector2.new(1,0.5)
-    selectBtn.Position = UDim2.new(1,-16,0.5,0)
-    selectBtn.Size = UDim2.new(0,220,0,28)
-    selectBtn.BackgroundColor3 = THEME.BLACK
-    selectBtn.AutoButtonColor = false
-    selectBtn.Text = "Select Fuel"
-    selectBtn.Font = Enum.Font.GothamBold
-    selectBtn.TextSize = 13
-    selectBtn.TextColor3 = THEME.WHITE
-    corner(selectBtn,8)
-
-    local selectStroke = stroke(selectBtn, 1.8, THEME.GREEN_DARK)
-    selectStroke.Transparency = 0.4
-
-    local function updateSelectVisual(isOpen)
-        if isOpen then
-            selectStroke.Color        = THEME.GREEN
-            selectStroke.Thickness    = 2.4
-            selectStroke.Transparency = 0
-        else
-            selectStroke.Color        = THEME.GREEN_DARK
-            selectStroke.Thickness    = 1.8
-            selectStroke.Transparency = 0.4
+    btn.MouseButton1Click:Connect(function()
+        local cur = (AA1 and AA1.getEnabled and AA1.getEnabled()) or false
+        local v = not cur
+        if AA1 and AA1.setEnabled then
+            AA1.setEnabled(v)
+            if v and AA1.ensureRunner then AA1.ensureRunner() end
         end
-    end
-    updateSelectVisual(false)
-
-    local padding = Instance.new("UIPadding", selectBtn)
-    padding.PaddingLeft  = UDim.new(0, 8)
-    padding.PaddingRight = UDim.new(0, 26)
-
-    local arrow = Instance.new("TextLabel", selectBtn)
-    arrow.AnchorPoint = Vector2.new(1,0.5)
-    arrow.Position = UDim2.new(1,-6,0.5,0)
-    arrow.Size = UDim2.new(0,18,0,18)
-    arrow.BackgroundTransparency = 1
-    arrow.Font = Enum.Font.GothamBold
-    arrow.TextSize = 18
-    arrow.TextColor3 = THEME.WHITE
-    arrow.Text = "▼"
-
-    local optionsPanel, inputConn
-    local opened = false
-
-    local function disconnectInput()
-        if inputConn then inputConn:Disconnect(); inputConn=nil end
-    end
-
-    local function closePanel()
-        if optionsPanel then optionsPanel:Destroy(); optionsPanel=nil end
-        disconnectInput()
-        opened = false
-        updateSelectVisual(false)
-    end
-
-    local function trim(s) return (tostring(s or ""):gsub("^%s*(.-)%s*$","%1")) end
-
-    local function getFuelList()
-        local out = {}
-        local items = workspace:FindFirstChild("Items")
-        if not items then
-            table.insert(out, "Log")
-            return out
-        end
-
-        -- list direct children only (clean/fast)
-        for _, ch in ipairs(items:GetChildren()) do
-            if ch:IsA("Model") or ch:IsA("BasePart") then
-                table.insert(out, ch.Name)
-            end
-        end
-
-        if #out == 0 then table.insert(out, "Log") end
-        table.sort(out, function(a,b) return tostring(a) < tostring(b) end)
-        return out
-    end
-
-    local function openPanel()
-        closePanel()
-
-        local pw, ph = panelParent.AbsoluteSize.X, panelParent.AbsoluteSize.Y
-        local leftRatio, topRatio, bottomRatio, rightMargin = 0.645, 0.02, 0.02, 8
-        local leftX = math.floor(pw * leftRatio)
-        local topY  = math.floor(ph * topRatio)
-        local bottomM = math.floor(ph * bottomRatio)
-
-        local w = pw - leftX - rightMargin
-        local h = ph - topY - bottomM
-
-        optionsPanel = Instance.new("Frame")
-        optionsPanel.Name = "CF_OptionsPanel"
-        optionsPanel.Parent = panelParent
-        optionsPanel.BackgroundColor3 = THEME.BLACK
-        optionsPanel.ClipsDescendants = true
-        optionsPanel.Position = UDim2.new(0,leftX,0,topY)
-        optionsPanel.Size = UDim2.new(0,w,0,h)
-        optionsPanel.ZIndex = 60
-        corner(optionsPanel,12)
-        stroke(optionsPanel,2.4,THEME.GREEN)
-
-        local body = Instance.new("Frame", optionsPanel)
-        body.BackgroundTransparency = 1
-        body.Position = UDim2.new(0,4,0,4)
-        body.Size = UDim2.new(1,-8,1,-8)
-        body.ZIndex = optionsPanel.ZIndex + 1
-
-        local searchBox = Instance.new("TextBox", body)
-        searchBox.Name = "SearchBox"
-        searchBox.BackgroundColor3 = THEME.BLACK
-        searchBox.ClearTextOnFocus = false
-        searchBox.Font = Enum.Font.GothamBold
-        searchBox.TextSize = 14
-        searchBox.TextColor3 = THEME.WHITE
-        searchBox.PlaceholderText = "Search"
-        searchBox.TextXAlignment = Enum.TextXAlignment.Center
-        searchBox.Text = ""
-        searchBox.ZIndex = body.ZIndex + 1
-        searchBox.Size = UDim2.new(1,0,0,32)
-        corner(searchBox,8)
-        local sbStroke = stroke(searchBox,1.8,THEME.GREEN)
-        sbStroke.ZIndex = searchBox.ZIndex + 1
-
-        local listHolder = Instance.new("ScrollingFrame", body)
-        listHolder.Name = "List"
-        listHolder.BackgroundColor3 = THEME.BLACK
-        listHolder.BorderSizePixel = 0
-        listHolder.ScrollBarThickness = 0
-        listHolder.AutomaticCanvasSize = Enum.AutomaticSize.Y
-        listHolder.CanvasSize = UDim2.new(0,0,0,0)
-        listHolder.ZIndex = body.ZIndex + 1
-        listHolder.ScrollingDirection = Enum.ScrollingDirection.Y
-        listHolder.ClipsDescendants = true
-        local listTopOffset = 32 + 10
-        listHolder.Position = UDim2.new(0,0,0,listTopOffset)
-        listHolder.Size = UDim2.new(1,0,1,-(listTopOffset + 4))
-
-        local lay = Instance.new("UIListLayout", listHolder)
-        lay.Padding = UDim.new(0,8)
-        lay.SortOrder = Enum.SortOrder.LayoutOrder
-        lay.HorizontalAlignment = Enum.HorizontalAlignment.Center
-
-        local pad = Instance.new("UIPadding", listHolder)
-        pad.PaddingTop = UDim.new(0,6)
-        pad.PaddingBottom = UDim.new(0,6)
-        pad.PaddingLeft = UDim.new(0,4)
-        pad.PaddingRight = UDim.new(0,4)
-
-        local locking = false
-        listHolder:GetPropertyChangedSignal("CanvasPosition"):Connect(function()
-            if locking then return end
-            locking = true
-            local pos = listHolder.CanvasPosition
-            if pos.X ~= 0 then listHolder.CanvasPosition = Vector2.new(0, pos.Y) end
-            locking = false
-        end)
-
-        local selected = (AA1_SEL and AA1_SEL.getFuel and AA1_SEL.getFuel()) or "Log"
-        local allBtns = {}
-
-        local function makeBtn(name)
-            local btn = Instance.new("TextButton")
-            btn.Parent = listHolder
-            btn.Size = UDim2.new(1,0,0,28)
-            btn.BackgroundColor3 = THEME.BLACK
-            btn.AutoButtonColor = false
-            btn.Font = Enum.Font.GothamBold
-            btn.TextSize = 14
-            btn.TextColor3 = THEME.WHITE
-            btn.Text = name
-            btn.ZIndex = listHolder.ZIndex + 1
-            btn.TextXAlignment = Enum.TextXAlignment.Center
-            corner(btn,6)
-
-            local st = stroke(btn,1.6,THEME.GREEN_DARK)
-            st.Transparency = 0.4
-
-            local bar = Instance.new("Frame", btn)
-            bar.BackgroundColor3 = THEME.GREEN
-            bar.BorderSizePixel = 0
-            bar.Size = UDim2.new(0,3,1,0)
-            bar.ZIndex = btn.ZIndex + 1
-            bar.Visible = false
-
-            local function paint(on)
-                if on then
-                    st.Color = THEME.GREEN; st.Thickness=2.4; st.Transparency=0
-                    bar.Visible = true
-                else
-                    st.Color = THEME.GREEN_DARK; st.Thickness=1.6; st.Transparency=0.4
-                    bar.Visible = false
-                end
-            end
-
-            paint(name == selected)
-
-            btn.MouseButton1Click:Connect(function()
-                selected = name
-                if AA1_SEL and AA1_SEL.setFuel then
-                    AA1_SEL.setFuel(name)
-                end
-                for _, b in ipairs(allBtns) do
-                    if b and b.Parent then
-                        local isOn = (b.Text == selected)
-                        local s = b:FindFirstChildOfClass("UIStroke")
-                        local bb = b:FindFirstChildOfClass("Frame")
-                        if s then
-                            if isOn then
-                                s.Color = THEME.GREEN; s.Thickness=2.4; s.Transparency=0
-                            else
-                                s.Color = THEME.GREEN_DARK; s.Thickness=1.6; s.Transparency=0.4
-                            end
-                        end
-                        if bb then bb.Visible = isOn end
-                    end
-                end
-                closePanel()
-            end)
-
-            table.insert(allBtns, btn)
-            return btn
-        end
-
-        local fuelList = getFuelList()
-        for i, name in ipairs(fuelList) do
-            local b = makeBtn(name)
-            b.LayoutOrder = i
-        end
-
-        local function applySearch()
-            local q = string.lower(trim(searchBox.Text))
-            for _, b in ipairs(allBtns) do
-                if b and b.Parent then
-                    local t = string.lower(b.Text or "")
-                    b.Visible = (q == "") or (string.find(t, q, 1, true) ~= nil)
-                end
-            end
-            listHolder.CanvasPosition = Vector2.new(0,0)
-        end
-        searchBox:GetPropertyChangedSignal("Text"):Connect(applySearch)
-
-        inputConn = UserInputService.InputBegan:Connect(function(input, gp)
-            if not optionsPanel then return end
-            if input.UserInputType ~= Enum.UserInputType.MouseButton1
-                and input.UserInputType ~= Enum.UserInputType.Touch then
-                return
-            end
-
-            local pos = input.Position
-            local op = optionsPanel.AbsolutePosition
-            local os = optionsPanel.AbsoluteSize
-
-            local inside =
-                pos.X >= op.X and pos.X <= op.X + os.X and
-                pos.Y >= op.Y and pos.Y <= op.Y + os.Y
-
-            if not inside then closePanel() end
-        end)
-    end
-
-    selectBtn.MouseButton1Click:Connect(function()
-        if opened then
-            closePanel()
-        else
-            -- ensure default selection exists
-            if AA1_SEL and AA1_SEL.ensureDefault then pcall(AA1_SEL.ensureDefault) end
-            openPanel()
-            opened = true
-            updateSelectVisual(true)
-        end
+        update(v)
     end)
 
-    ------------------------------------------------------------------------
-    -- boot sync (AA1 auto-run without opening Home)
-    ------------------------------------------------------------------------
+    if AA1 and AA1.onChanged then
+        AA1.onChanged(function()
+            update((AA1.getEnabled and AA1.getEnabled()) or false)
+        end)
+    end
+
+    update((AA1 and AA1.getEnabled and AA1.getEnabled()) or false)
+
+    -- auto-run resume when UI reloaded
     task.defer(function()
-        if AA1_SEL and AA1_SEL.ensureDefault then pcall(AA1_SEL.ensureDefault) end
-        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
-        if set1 then
-            set1((AA1_ROW1 and AA1_ROW1.getEnabled and AA1_ROW1.getEnabled()) or false)
-        end
+        if AA1 and AA1.ensureRunner then AA1.ensureRunner() end
     end)
 end)
 --===== UFO HUB X • Home – Auto Rebirth (AA1 Runner + Model A V1 + A V2) =====
