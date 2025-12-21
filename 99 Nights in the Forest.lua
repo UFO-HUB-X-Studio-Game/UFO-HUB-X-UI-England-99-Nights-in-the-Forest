@@ -710,13 +710,8 @@ registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one)
+-- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one, no stuck)
 -- Row 2  : "Select Fuel" (Model A V2 Overlay / 1 button: "Log" toggle)
---
--- Campfire:
---   workspace.Map.Campground.MainFire.InnerTouchZone
--- Logs:
---   workspace.Items (Model) with: Main + "Meshes/log_Cylinder"
 
 ----------------------------------------------------------------------
 -- 0) AA1 MINI (generic + onChanged signal)
@@ -817,12 +812,11 @@ do
     end
 
     function AA1.ensureRunner() end
-
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (STRICT one-by-one feed)
+-- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (STRICT one-by-one feed, anti-stuck)
 ----------------------------------------------------------------------
 do
     local SYSTEM_NAME = "Campfire_AutoRefill"
@@ -830,20 +824,30 @@ do
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
-        HeightMul   = 2.0,   -- สูง 2 เท่าเหนือ InnerTouchZone
-        DropWait    = 1.35,  -- จังหวะหลัก: 1 อัน/รอบ
+        HeightMul   = 2.0,
+        DropWait    = 1.35,
         RescanEvery = 2.0,
         Cooldown    = 8.0,
         RetryWait   = 0.5,
 
-        -- ✅ กัน “ค้างบนแล้วหล่นทีเดียว”
-        MustStartFallingWithin = 0.55, -- วินาที: ต้องเห็นว่าเริ่มตก
-        ForceDownVel           = 60,   -- velocity ลง (กรณีค้าง)
+        -- anti-stuck core
+        MustStartFallingWithin = 0.40,  -- ต้องเริ่มตกให้เห็นเร็วขึ้น
+        ForceDownVel           = 85,    -- เตะลงแรงขึ้น
+        KickImpulse            = 120,   -- impulse ลง
+        NudgeXZ                = 1.25,  -- ขยับ xz กันค้างจุดเดิม
+        StuckFixTries          = 8,     -- ถ้ายังไม่ตก ให้แก้ซ้ำได้กี่รอบ
+        StuckFixStepDown       = 0.35,  -- ขยับลงทีละนิดถ้ายังค้าง
+
+        -- traffic control (resume safe)
+        ResumeWarmup           = 0.9,
+        BusyRadiusXZ           = 7.5,
+        BusyAboveY             = 0.6,
+        BusyCheckTimeout       = 6.0,
+        BusyPoll               = 0.12,
     })
 
     local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
 
-    -- ✅ shared runner state across re-executions
     local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
     if not RS then
         RS = { token = 0, running = false }
@@ -899,14 +903,95 @@ do
         end
     end
 
-    local function forcePushDown(m, vel)
-        for _, d in ipairs(m:GetDescendants()) do
+    local function trySetNetOwner(m)
+        -- ช่วยให้ client ฟิสิกส์ไหลลื่นขึ้น (ถ้าทำได้)
+        local pp = ensurePrimaryPart(m)
+        if pp then
+            pcall(function() pp:SetNetworkOwner(game:GetService("Players").LocalPlayer) end)
+        end
+    end
+
+    local function forceDown(model, vel, impulse)
+        vel = math.abs(vel or 85)
+        impulse = math.abs(impulse or 120)
+        local pp = ensurePrimaryPart(model)
+        if not pp then return end
+
+        for _, d in ipairs(model:GetDescendants()) do
             if d:IsA("BasePart") then
-                pcall(function()
-                    d.Anchored = false
-                    d.AssemblyLinearVelocity = Vector3.new(0, -math.abs(vel or 60), 0)
-                end)
+                pcall(function() d.Anchored = false end)
             end
+        end
+
+        pcall(function()
+            pp.AssemblyLinearVelocity = Vector3.new(0, -vel, 0)
+        end)
+        pcall(function()
+            pp:ApplyImpulse(Vector3.new(0, -impulse * pp.AssemblyMass, 0))
+        end)
+    end
+
+    local function startedFalling(pp, lastY)
+        if not pp or not pp.Parent then return false, lastY end
+        local y = pp.Position.Y
+        if lastY and y < (lastY - 0.05) then
+            return true, y
+        end
+        return false, y
+    end
+
+    -- ✅ 핵: วางแล้ว "ต้องเริ่มตก" ถ้าไม่ตก = เตะลง + ขยับลงทีละนิด + ขยับ XZ กันติดจุดเดิม
+    local function kickAndEnsureFalling(model, zoneY)
+        local pp = ensurePrimaryPart(model)
+        if not pp then return end
+
+        local must = tonumber(AA1.state.MustStartFallingWithin) or 0.40
+        local tries = tonumber(AA1.state.StuckFixTries) or 8
+        local stepDown = tonumber(AA1.state.StuckFixStepDown) or 0.35
+        local nudge = tonumber(AA1.state.NudgeXZ) or 1.25
+
+        local vel = tonumber(AA1.state.ForceDownVel) or 85
+        local imp = tonumber(AA1.state.KickImpulse) or 120
+
+        local lastY = pp.Position.Y
+        local t0 = os.clock()
+
+        -- เตะครั้งแรกทันที
+        forceDown(model, vel, imp)
+
+        for k = 1, tries do
+            local deadline = t0 + must
+            while os.clock() < deadline do
+                task.wait(0.05)
+                local ok, newY = startedFalling(pp, lastY)
+                lastY = newY
+                if ok then return end
+            end
+
+            -- ยังไม่เริ่มตก -> แก้เพิ่ม
+            -- 1) ขยับลงนิดนึง (กันค้างลอย)
+            pcall(function()
+                local pivot = model:GetPivot()
+                model:PivotTo(pivot * CFrame.new(0, -stepDown, 0))
+            end)
+
+            -- 2) ขยับ XZ สุ่มนิดๆ (กันค้างที่เดิมเป๊ะ)
+            local dx = (math.random() - 0.5) * 2 * nudge
+            local dz = (math.random() - 0.5) * 2 * nudge
+            pcall(function()
+                local pivot = model:GetPivot()
+                model:PivotTo(pivot * CFrame.new(dx, 0, dz))
+            end)
+
+            -- 3) เตะลงซ้ำ
+            forceDown(model, vel, imp)
+
+            -- 4) ถ้ามันยังสูงกว่า zoneY เยอะ ก็เตะอีกรอบแรงๆ
+            if zoneY and pp and pp.Parent and pp.Position.Y > (zoneY + 1.0) then
+                forceDown(model, vel + 25, imp + 40)
+            end
+
+            t0 = os.clock()
         end
     end
 
@@ -920,7 +1005,6 @@ do
         local items = getItemsFolder()
         queue = {}
         qIndex = 1
-
         if items then
             for _, ch in ipairs(items:GetChildren()) do
                 if isLogCrateModel(ch) then
@@ -928,7 +1012,6 @@ do
                 end
             end
         end
-
         lastScan = os.clock()
     end
 
@@ -956,24 +1039,7 @@ do
                 end
             end
         end
-
         return nil
-    end
-
-    -- ✅ wait until it STARTS falling (fix: stuck above then drop many)
-    local function waitStartFalling(pp, seconds)
-        if not pp or not pp.Parent then return end
-        local t0 = os.clock()
-        local lastY = pp.Position.Y
-        while (os.clock() - t0) < (seconds or 0.55) do
-            task.wait(0.05)
-            if not pp.Parent then return end
-            local y = pp.Position.Y
-            if y < (lastY - 0.05) then
-                return -- started falling
-            end
-            lastY = y
-        end
     end
 
     local function canFeedNow()
@@ -984,10 +1050,53 @@ do
         return fuel == "Log"
     end
 
+    local function isFireAreaBusy(zone)
+        local items = getItemsFolder()
+        if not items or not zone then return false end
+
+        local r = tonumber(AA1.state.BusyRadiusXZ) or 7.5
+        local above = tonumber(AA1.state.BusyAboveY) or 0.6
+
+        local zx, zy, zz = zone.Position.X, zone.Position.Y, zone.Position.Z
+        for _, m in ipairs(items:GetChildren()) do
+            if isLogCrateModel(m) then
+                local pp = ensurePrimaryPart(m)
+                if pp then
+                    local p = pp.Position
+                    local dx = p.X - zx
+                    local dz = p.Z - zz
+                    if (dx*dx + dz*dz) <= (r*r) and p.Y > (zy + above) then
+                        return true, m
+                    end
+                end
+            end
+        end
+        return false, nil
+    end
+
+    local function waitUntilClear(zone)
+        local t0 = os.clock()
+        local timeout = tonumber(AA1.state.BusyCheckTimeout) or 6.0
+        local poll = tonumber(AA1.state.BusyPoll) or 0.12
+
+        while (os.clock() - t0) < timeout do
+            local busy = isFireAreaBusy(zone)
+            if not busy then return true end
+            task.wait(poll)
+        end
+        local _, stuck = isFireAreaBusy(zone)
+        if stuck then
+            forceDown(stuck, tonumber(AA1.state.ForceDownVel) or 85, tonumber(AA1.state.KickImpulse) or 120)
+        end
+        return false
+    end
+
     local function dropOneLogIntoFire()
         local zone = getInnerTouchZone()
         if not zone then return false end
         if not canFeedNow() then return false end
+
+        waitUntilClear(zone)
 
         local crate = nextLog()
         if not crate then return false end
@@ -1004,20 +1113,15 @@ do
         local ok = pcall(function()
             setModelAnchored(crate, false)
             zeroVel(crate)
+            trySetNetOwner(crate)
+
             crate:PivotTo(CFrame.new(targetPos) * rot)
             zeroVel(crate)
         end)
         if not ok then return false end
 
-        -- ✅ ถ้าค้าง ให้ “เริ่มตก” ก่อน
-        local must = tonumber(AA1.state.MustStartFallingWithin) or 0.55
-        waitStartFalling(pp, must)
-
-        -- ยังไม่ตก -> ดันลง
-        if pp and pp.Parent then
-            local vel = tonumber(AA1.state.ForceDownVel) or 60
-            forcePushDown(crate, vel)
-        end
+        -- ✅ แก้ “ค้างบน” แบบหนัก: บังคับให้มันเริ่มตกเสมอ
+        kickAndEnsureFalling(crate, zone.Position.Y)
 
         return true
     end
@@ -1027,16 +1131,19 @@ do
         RS.running = false
     end
 
-    local function runner()
+    local function runner(isResume)
         if RS.running or not AA1.state.Enabled then return end
         RS.running = true
         RS.token += 1
         local my = RS.token
 
         task.spawn(function()
+            if isResume then
+                local wup = tonumber(AA1.state.ResumeWarmup) or 0.9
+                if wup > 0 then task.wait(wup) end
+            end
+
             while AA1.state.Enabled and RS.token == my do
-                -- ✅ สำคัญ: กัน “รัวตอนเพิ่งเลือกไม้/โหลดครั้งแรก”
-                -- วางได้ต่อเมื่อเลือก Fuel อยู่จริง
                 if canFeedNow() then
                     pcall(dropOneLogIntoFire)
                     local w = tonumber(AA1.state.DropWait) or 1.35
@@ -1059,39 +1166,32 @@ do
         emit()
 
         if v then
-            -- ✅ เปิด Row1 = บังคับเปิด Row2 + เลือก Log
             if AA1_FUEL then
                 if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
                 if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
             end
-
             rebuildQueue()
-            -- ✅ kill runner ซ้อนจากการรันสคริปต์ซ้ำ แล้วเริ่มใหม่ตัวเดียว
             stopRunner()
-            runner()
+            runner(false)
         else
             stopRunner()
         end
     end
 
     function AA1.getEnabled() return AA1.state.Enabled == true end
-    function AA1.ensureRunner()
+    function AA1.ensureRunner(isResume)
         if AA1.getEnabled() then
             rebuildQueue()
-            -- ✅ ensure แบบปลอด runner ซ้อน
             stopRunner()
-            runner()
+            runner(isResume == true)
         end
     end
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที (แต่ไม่ซ้อน)
     task.defer(function()
         if AA1.getEnabled() then
-            rebuildQueue()
-            stopRunner()
-            runner()
+            AA1.ensureRunner(true)
         end
     end)
 end
@@ -1212,7 +1312,7 @@ registerRight("Home", function(scroll)
             local v = not cur
             if aa1Ref and aa1Ref.setEnabled then
                 aa1Ref.setEnabled(v)
-                if v and aa1Ref.ensureRunner then aa1Ref.ensureRunner() end
+                if v and aa1Ref.ensureRunner then aa1Ref.ensureRunner(false) end
             end
             update(v)
         end)
@@ -1227,10 +1327,8 @@ registerRight("Home", function(scroll)
         return update, row
     end
 
-    -- Row1
     makeRowSwitch("CF_Row1", base + 2, "Auto Refill Campfire", AA1_ROW1)
 
-    -- Row2 (A V1 row + A V2 overlay)
     local row2 = Instance.new("Frame")
     row2.Name = "CF_Row2"
     row2.Parent = scroll
@@ -1380,9 +1478,8 @@ registerRight("Home", function(scroll)
             end
             updateLogVisual(v)
 
-            -- ✅ ถ้า Row1 เปิดอยู่ ให้ ensure ต่อ (แต่ไม่ซ้อน เพราะ runner มี global RS)
             if AA1_ROW1 and AA1_ROW1.ensureRunner then
-                AA1_ROW1.ensureRunner()
+                AA1_ROW1.ensureRunner(false)
             end
         end)
 
@@ -1395,7 +1492,6 @@ registerRight("Home", function(scroll)
 
             local pos = input.Position
             local px, py = pos.X, pos.Y
-
             local op = optionsPanel.AbsolutePosition
             local os = optionsPanel.AbsoluteSize
 
@@ -1420,7 +1516,9 @@ registerRight("Home", function(scroll)
     end)
 
     task.defer(function()
-        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
+        if AA1_ROW1 and AA1_ROW1.ensureRunner then
+            AA1_ROW1.ensureRunner(true)
+        end
     end)
 end)
 --===== UFO HUB X • Home – Auto Rebirth (AA1 Runner + Model A V1 + A V2) =====
