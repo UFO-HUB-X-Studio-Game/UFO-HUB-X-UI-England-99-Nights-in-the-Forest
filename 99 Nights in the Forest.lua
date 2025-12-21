@@ -710,8 +710,13 @@ registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one, SAFE ON RE-RUN)
+-- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one)
 -- Row 2  : "Select Fuel" (Model A V2 Overlay / 1 button: "Log" toggle)
+--
+-- Campfire:
+--   workspace.Map.Campground.MainFire.InnerTouchZone
+-- Logs:
+--   workspace.Items (Model) with: Main + "Meshes/log_Cylinder"
 
 ----------------------------------------------------------------------
 -- 0) AA1 MINI (generic + onChanged signal)
@@ -812,11 +817,12 @@ do
     end
 
     function AA1.ensureRunner() end
+
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (TRUE one-by-one with "in-flight" lock)
+-- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (HARD one-by-one + forced descend)
 ----------------------------------------------------------------------
 do
     local SYSTEM_NAME = "Campfire_AutoRefill"
@@ -824,21 +830,22 @@ do
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
-        HeightMul   = 2.0,   -- สูง 2 เท่าเหนือ InnerTouchZone
-        DropWait    = 1.35,  -- หน่วงหลัง “เห็นว่าลงแล้ว” (ไม่ใช่หน่วงแทนการตก)
+        HeightMul   = 2.0,
+        DropWait    = 1.10,  -- หน่วงหลัง “ปล่อยลงจบ”
         RescanEvery = 2.0,
         Cooldown    = 8.0,
         RetryWait   = 0.5,
 
-        -- ✅ กันค้างตอนเปิดใหม่
-        DownVel     = 8,     -- ใส่ความเร็วลงเบาๆ
-        NudgeXZ     = 1.1,   -- ขยับ X/Z กันค้างตำแหน่งเดิมเป๊ะ
-        WaitFallMax = 2.2,   -- รอให้ “ลงจริง” สูงสุดกี่วิ ก่อนถือว่าโอเค
-        MinDropWait = 0.35,  -- กันค่า Save เดิมที่ต่ำจนรัว
+        -- ✅ แก้ค้างบน: ปล่อยลงแบบควบคุมเอง (ไม่พึ่งฟิสิกส์เริ่มตก)
+        DescendTime   = 0.75, -- เวลาที่ใช้ไหลลง (วินาที)
+        DescendStepHz = 30,   -- ความถี่การเลื่อนลง (ครั้ง/วินาที)
+        NudgeXZ       = 1.2,  -- กันวางตำแหน่งเดิมเป๊ะ (ลดโอกาสค้างซ้อน)
     })
 
     local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
 
+    -- ✅ shared runner state across re-executions
+    _G.__UFOX_RUN_STATE = _G.__UFOX_RUN_STATE or {}
     local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
     if not RS then
         RS = { token = 0, running = false, inFlight = false }
@@ -892,14 +899,6 @@ do
                 end)
             end
         end
-    end
-
-    local function pushDownOnce(pp, vel)
-        if not pp or not pp.Parent then return end
-        pcall(function()
-            pp.Anchored = false
-            pp.AssemblyLinearVelocity = Vector3.new(0, -math.abs(vel or 8), 0)
-        end)
     end
 
     local function canFeedNow()
@@ -957,28 +956,26 @@ do
         return nil
     end
 
-    -- ✅ key fix: หลังวาง ต้อง "รอจนลงจริง" ก่อนอนุญาตอันต่อไป
-    local function waitUntilDropped(zone, pp)
-        if not zone or not pp or not pp.Parent then return end
+    -- ✅ forced descend: พาไม้ไหลลงเองทีละสเต็ป (จบแน่นอน ไม่ค้าง)
+    local function forcedDescend(crate, startCFrame, endPos)
+        local total = tonumber(AA1.state.DescendTime) or 0.75
+        if total < 0.2 then total = 0.2 end
 
-        local topY = zone.Position.Y + (zone.Size.Y * 0.45) -- ระดับ “บนๆของโซน”
-        local t0 = os.clock()
-        local maxT = tonumber(AA1.state.WaitFallMax) or 2.2
-        local vel = tonumber(AA1.state.DownVel) or 8
+        local hz = tonumber(AA1.state.DescendStepHz) or 30
+        if hz < 10 then hz = 10 end
 
-        -- ใส่แรงลง 1 ครั้งทันที กันค้างตอนเปิดใหม่
-        pushDownOnce(pp, vel)
+        local dt = 1 / hz
+        local steps = math.max(1, math.floor(total / dt))
 
-        while (os.clock() - t0) < maxT do
-            task.wait(0.05)
-            if not pp.Parent then return end
-            if pp.Position.Y < topY then
-                return -- ✅ ถือว่าลงจริงแล้ว
-            end
-            -- ถ้ายังลอยนิ่ง ให้ดันลงเบาๆอีกนิด (ไม่สแปม)
-            if math.fmod((os.clock() - t0), 0.35) < 0.06 then
-                pushDownOnce(pp, vel)
-            end
+        for i = 1, steps do
+            if not crate or not crate.Parent then return end
+            local a = i / steps
+            local y = startCFrame.Position.Y + (endPos.Y - startCFrame.Position.Y) * a
+            local pos = Vector3.new(endPos.X, y, endPos.Z)
+            pcall(function()
+                crate:PivotTo(CFrame.new(pos) * startCFrame.Rotation)
+            end)
+            task.wait(dt)
         end
     end
 
@@ -993,33 +990,26 @@ do
         local mul = tonumber(AA1.state.HeightMul) or 2.0
         if mul < 0.2 then mul = 0.2 end
 
-        local nudge = tonumber(AA1.state.NudgeXZ) or 1.1
+        local nudge = tonumber(AA1.state.NudgeXZ) or 1.2
         local dx = (math.random() - 0.5) * 2 * nudge
         local dz = (math.random() - 0.5) * 2 * nudge
 
         local up = zone.Size.Y * mul
-        local targetPos = zone.Position + Vector3.new(dx, up, dz)
+        local startPos = zone.Position + Vector3.new(dx, up, dz)
+        local endPos   = zone.Position + Vector3.new(dx, 0.25, dz)
 
         local pp = ensurePrimaryPart(crate)
         local rot = (pp and pp.CFrame.Rotation) or crate:GetPivot().Rotation
 
-        local ok = pcall(function()
+        pcall(function()
+            -- ปลด Anchor + รีเซ็ตความเร็ว (กันไม้เก่าใน map)
             setModelAnchored(crate, false)
             zeroVel(crate)
-            crate:PivotTo(CFrame.new(targetPos) * rot)
+            crate:PivotTo(CFrame.new(startPos) * rot)
             zeroVel(crate)
         end)
-        if not ok then return false end
 
-        -- ✅ ล็อก 1 อัน: รอจน "ลงจริง" ก่อน
-        waitUntilDropped(zone, pp)
-
-        -- หน่วงเพิ่มนิดเพื่อความเนียน (กันค่า Save เดิมที่ต่ำจนรัว)
-        local w = tonumber(AA1.state.DropWait) or 1.35
-        local minW = tonumber(AA1.state.MinDropWait) or 0.35
-        if w < minW then w = minW end
-        task.wait(w)
-
+        forcedDescend(crate, CFrame.new(startPos) * rot, endPos)
         return true
     end
 
@@ -1038,13 +1028,17 @@ do
         task.spawn(function()
             while AA1.state.Enabled and RS.token == my do
                 if canFeedNow() then
-                    -- ✅ กันซ้อนจริงๆ
                     if not RS.inFlight then
                         RS.inFlight = true
                         pcall(dropOneLogIntoFire)
                         RS.inFlight = false
+
+                        local w = tonumber(AA1.state.DropWait) or 1.10
+                        if w < 0.25 then w = 0.25 end
+                        task.wait(w)
+                    else
+                        task.wait(0.05)
                     end
-                    task.wait(0.05)
                 else
                     local rw = tonumber(AA1.state.RetryWait) or 0.5
                     if rw < 0.1 then rw = 0.1 end
@@ -1063,6 +1057,7 @@ do
         emit()
 
         if v then
+            -- เปิด Row1 = บังคับเปิด Row2 + เลือก Log
             if AA1_FUEL then
                 if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
                 if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
@@ -1086,7 +1081,6 @@ do
 
     _G.UFOX_AA1[SYSTEM_NAME] = AA1
 
-    -- ✅ เปิดค้างไว้ แล้วรัน UI ใหม่: ยัง “ทีละอัน” เพราะมี inFlight lock + waitUntilDropped
     task.defer(function()
         if AA1.getEnabled() then
             AA1.ensureRunner()
@@ -1417,9 +1411,7 @@ registerRight("Home", function(scroll)
     end)
 
     task.defer(function()
-        if AA1_ROW1 and AA1_ROW1.ensureRunner then
-            AA1_ROW1.ensureRunner()
-        end
+        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
     end)
 end)
 --===== UFO HUB X • Home – Auto Rebirth (AA1 Runner + Model A V1 + A V2) =====
