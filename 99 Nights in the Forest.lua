@@ -710,7 +710,7 @@ registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (Switch / AA1)
+-- Row 1  : "Auto Refill Campfire" (Switch / feeds logs sequentially)
 -- Row 2  : "Select Fuel" (Model A V2 Overlay / 1 button: "Log" toggle)
 
 ----------------------------------------------------------------------
@@ -784,8 +784,8 @@ do
     local makeAA1 = _G.__UFOX_MAKE_AA1
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
-        Enabled   = false,      -- เลือกเชื้อเพลิง On/Off
-        FuelName  = "Log",      -- ตอนนี้มีแค่อันเดียว
+        Enabled   = false,   -- เลือกเชื้อเพลิง On/Off
+        FuelName  = "Log",
     })
 
     function AA1.setEnabled(v)
@@ -812,7 +812,7 @@ do
 end
 
 ----------------------------------------------------------------------
--- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (moves selected fuel above InnerTouchZone)
+-- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (brings ALL logs, one-by-one, then DROP)
 ----------------------------------------------------------------------
 do
     local SYSTEM_NAME = "Campfire_AutoRefill"
@@ -820,9 +820,11 @@ do
 
     local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
         Enabled     = false,
-        HeightMul   = 2.0,   -- "สูง 2 เท่า"
-        LoopWait    = 0.20,
-        MinLoopWait = 0.06,
+        HeightMul   = 2.0,     -- "สูง 2 เท่า" เหนือ InnerTouchZone
+        LoopWait    = 0.10,    -- เร็วขึ้นได้ (ยิ่งต่ำยิ่งรัว)
+        MinLoopWait = 0.05,
+        RescanEvery = 2.0,     -- รีสแกนหาไม้ทั้งหมดทุกกี่วินาที
+        Cooldown    = 8.0,     -- กันหยิบไม้ซ้ำเร็วเกินไป (วินาที)
     })
 
     local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
@@ -838,32 +840,12 @@ do
         return nil
     end
 
-    -- Log crate 100%: Items:GetChildren()[143]  (พร้อม fallback กัน index เปลี่ยน)
+    -- signature ตามที่นายให้: มี Main + มี Meshes/log_Cylinder + HoverLabel (ไม่บังคับ)
     local function isLogCrateModel(m)
         if not m or not m:IsA("Model") then return false end
         local main = m:FindFirstChild("Main")
         local mesh = m:FindFirstChild("Meshes/log_Cylinder", true)
         return (main ~= nil) and (mesh ~= nil)
-    end
-
-    local function getLogCrate()
-        local items = workspace:FindFirstChild("Items")
-        if not items then return nil end
-
-        -- 1) exact index 143
-        local list = items:GetChildren()
-        local byIndex = list[143]
-        if isLogCrateModel(byIndex) then
-            return byIndex
-        end
-
-        -- 2) fallback scan by signature
-        for _, ch in ipairs(list) do
-            if isLogCrateModel(ch) then
-                return ch
-            end
-        end
-        return nil
     end
 
     local function ensurePrimaryPart(m)
@@ -876,11 +858,89 @@ do
         return nil
     end
 
-    local function stepOnce()
+    local function setModelAnchored(m, anchored)
+        for _, d in ipairs(m:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function() d.Anchored = anchored end)
+            end
+        end
+    end
+
+    local function zeroVel(m)
+        for _, d in ipairs(m:GetDescendants()) do
+            if d:IsA("BasePart") then
+                pcall(function()
+                    d.AssemblyLinearVelocity = Vector3.zero
+                    d.AssemblyAngularVelocity = Vector3.zero
+                end)
+            end
+        end
+    end
+
+    local itemsFolder = nil
+    local function getItemsFolder()
+        if itemsFolder and itemsFolder.Parent then return itemsFolder end
+        local f = workspace:FindFirstChild("Items")
+        if f then itemsFolder = f end
+        return itemsFolder
+    end
+
+    -- คิวไม้ + anti-repeat
+    local queue = {}
+    local qIndex = 1
+    local lastScan = 0
+    local pickedAt = setmetatable({}, { __mode = "k" }) -- weak keys
+
+    local function rebuildQueue()
+        local items = getItemsFolder()
+        if not items then return end
+
+        queue = {}
+        qIndex = 1
+
+        for _, ch in ipairs(items:GetChildren()) do
+            if isLogCrateModel(ch) then
+                table.insert(queue, ch)
+            end
+        end
+
+        lastScan = os.clock()
+    end
+
+    local function nextLog()
+        local now = os.clock()
+        local rescanEvery = tonumber(AA1.state.RescanEvery) or 2.0
+        if (now - lastScan) > rescanEvery or #queue == 0 then
+            rebuildQueue()
+        end
+
+        if #queue == 0 then return nil end
+
+        local tries = 0
+        while tries < #queue do
+            if qIndex > #queue then qIndex = 1 end
+            local m = queue[qIndex]
+            qIndex += 1
+            tries += 1
+
+            if m and m.Parent and isLogCrateModel(m) then
+                local t = pickedAt[m]
+                local cd = tonumber(AA1.state.Cooldown) or 8.0
+                if (not t) or ((now - t) >= cd) then
+                    pickedAt[m] = now
+                    return m
+                end
+            end
+        end
+
+        return nil
+    end
+
+    local function dropOneLogIntoFire()
         local zone = getInnerTouchZone()
         if not zone then return end
 
-        -- ต้องมีการเลือกเชื้อเพลิงก่อน (Row2 ON)
+        -- ต้องเลือกเชื้อเพลิงก่อน (Row2 ON)
         if not (AA1_FUEL and AA1_FUEL.getEnabled and AA1_FUEL.getEnabled()) then
             return
         end
@@ -888,12 +948,13 @@ do
         local fuel = (AA1_FUEL.getFuel and AA1_FUEL.getFuel()) or "Log"
         if fuel ~= "Log" then return end
 
-        local crate = getLogCrate()
+        local crate = nextLog()
         if not crate then return end
 
         local mul = tonumber(AA1.state.HeightMul) or 2.0
         if mul < 0.2 then mul = 0.2 end
 
+        -- วางเหนือ InnerTouchZone แล้ว “ปล่อยตกลง”
         local up = zone.Size.Y * mul
         local targetPos = zone.Position + Vector3.new(0, up, 0)
 
@@ -901,7 +962,12 @@ do
         local rot = (pp and pp.CFrame.Rotation) or crate:GetPivot().Rotation
 
         pcall(function()
+            -- ปลด Anchor ก่อน เพื่อให้ตกจริง
+            setModelAnchored(crate, false)
+            zeroVel(crate)
             crate:PivotTo(CFrame.new(targetPos) * rot)
+            -- เคลียร์ vel อีกรอบหลังย้าย (กันพุ่งแปลกๆ)
+            zeroVel(crate)
         end)
     end
 
@@ -913,10 +979,10 @@ do
 
         task.spawn(function()
             while AA1.state.Enabled and token == my do
-                pcall(stepOnce)
+                pcall(dropOneLogIntoFire)
 
-                local w = tonumber(AA1.state.LoopWait) or 0.20
-                local minW = tonumber(AA1.state.MinLoopWait) or 0.06
+                local w = tonumber(AA1.state.LoopWait) or 0.10
+                local minW = tonumber(AA1.state.MinLoopWait) or 0.05
                 if w < minW then w = minW end
                 task.wait(w)
             end
@@ -936,6 +1002,8 @@ do
                 if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
                 if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
             end
+            -- สแกนคิวครั้งแรก
+            rebuildQueue()
             runner()
         else
             token += 1
@@ -951,7 +1019,10 @@ do
 
     -- ✅ ถ้าเปิดค้างไว้ แล้วรัน UI ใหม่ ให้ทำงานต่อทันที
     task.defer(function()
-        if AA1.getEnabled() then runner() end
+        if AA1.getEnabled() then
+            rebuildQueue()
+            runner()
+        end
     end)
 end
 
@@ -1102,9 +1173,9 @@ registerRight("Home", function(scroll)
     end
 
     ------------------------------------------------------------------------
-    -- Row1
+    -- Row1 (Switch)
     ------------------------------------------------------------------------
-    local setRow1 = makeRowSwitch("CF_Row1", base + 2, "Auto Refill Campfire", AA1_ROW1)
+    makeRowSwitch("CF_Row1", base + 2, "Auto Refill Campfire", AA1_ROW1)
 
     ------------------------------------------------------------------------
     -- Row2 (A V1 row + A V2 overlay button)
@@ -1128,7 +1199,7 @@ registerRight("Home", function(scroll)
     lab2.TextXAlignment = Enum.TextXAlignment.Left
     lab2.Text = "Select Fuel"
 
-    local panelParent = scroll.Parent -- กรอบขวา
+    local panelParent = scroll.Parent
     local optionsPanel, inputConn
     local opened = false
 
@@ -1258,10 +1329,8 @@ registerRight("Home", function(scroll)
                 if AA1_ROW2.setEnabled then AA1_ROW2.setEnabled(v) end
             end
             updateLogVisual(v)
-            -- กดเลือก/ยกเลิก = ไม่ต้องปิด panel อัตโนมัติ (ตามสไตล์ V2 กดเองได้)
         end)
 
-        -- close on outside click
         inputConn = UserInputService.InputBegan:Connect(function(input, gp)
             if not optionsPanel then return end
             if input.UserInputType ~= Enum.UserInputType.MouseButton1
@@ -1295,16 +1364,6 @@ registerRight("Home", function(scroll)
         end
     end)
 
-    -- sync row2 selection state if AA1 changes (after UI reload)
-    if AA1_ROW2 and AA1_ROW2.onChanged then
-        AA1_ROW2.onChanged(function()
-            -- nothing to update on row directly (overlay handles button state)
-        end)
-    end
-
-    ------------------------------------------------------------------------
-    -- resume if already ON after UI reload (Row1 runner)
-    ------------------------------------------------------------------------
     task.defer(function()
         if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
     end)
