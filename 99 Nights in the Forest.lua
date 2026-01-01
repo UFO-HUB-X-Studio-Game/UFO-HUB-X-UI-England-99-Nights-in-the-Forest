@@ -708,12 +708,39 @@ registerRight("Home", function(scroll) end)
 registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
--- [[ UFO HUB X: AUTO CAMPFIRE FULL SYSTEM (MODEL A V1 + V2) ]]
+-- [[ UFO HUB X: AUTO CAMPFIRE SYSTEM (HOME TAB) ]]
 
+-- 1. [ LOGIC SYSTEM ] - แยกออกมาไว้นอก UI เพื่อไม่ให้ดึงเครื่องจน UI ไม่ขึ้น
+_G.AutoRefuel = _G.AutoRefuel or false
+_G.SelectedFuel = _G.SelectedFuel or nil
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if _G.AutoRefuel and _G.SelectedFuel == "Log" then
+            pcall(function()
+                local zone = workspace.Map.MainFire.InnerTouchZone
+                local items = workspace.Items:GetChildren()
+                
+                for _, item in ipairs(items) do
+                    if item.Name == "Log" and item:IsA("BasePart") then
+                        -- ดึงไม้มาทีละชิ้น
+                        item.CFrame = zone.CFrame * CFrame.new(0, 10, 0)
+                        item.Velocity = Vector3.new(0, 0, 0)
+                        item.CanCollide = true
+                        item.Anchored = false 
+                        task.wait(1.5) -- ปล่อยลงทีละอันเรื่อยๆ
+                        if not _G.AutoRefuel then break end
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- 2. [ UI SYSTEM ] - MODEL A V1 & V2 ในปุ่ม HOME
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
     
-    -- [ CONFIG ]
     local THEME = {
         GREEN = Color3.fromRGB(25, 255, 125),
         GREEN_DARK = Color3.fromRGB(0, 120, 60),
@@ -731,16 +758,14 @@ registerRight("Home", function(scroll)
         return s
     end
 
-    -- [ HEADER ]
+    -- Header
     local header = Instance.new("TextLabel")
-    header.Parent = scroll
-    header.Size = UDim2.new(1, 0, 0, 36)
-    header.BackgroundTransparency = 1
+    header.Parent = scroll; header.Size = UDim2.new(1, 0, 0, 36); header.BackgroundTransparency = 1
     header.Font = Enum.Font.GothamBold; header.TextSize = 16; header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left; header.Text = "auto 🔥 Campfire"
 
     ---------------------------------------------------------
-    -- รายการที่ 1: Auto Refuel (Model A V1 100%)
+    -- รายการที่ 1: Auto Refuel (Model A V1 Switch)
     ---------------------------------------------------------
     local row1 = Instance.new("Frame")
     row1.Parent = scroll; row1.Size = UDim2.new(1, -6, 0, 46); row1.BackgroundColor3 = THEME.BLACK; corner(row1, 12)
@@ -788,69 +813,38 @@ registerRight("Home", function(scroll)
     selectBtn.BackgroundColor3 = THEME.BLACK; selectBtn.Text = "🔍 Select Options"; selectBtn.Font = Enum.Font.GothamBold; selectBtn.TextSize = 13; selectBtn.TextColor3 = THEME.WHITE; corner(selectBtn, 8)
     stroke(selectBtn, 1.8, THEME.GREEN_DARK).Transparency = 0.4
 
-    -- [ THE POPUP MODEL A V2 ]
+    -- [ POPUP MODEL A V2 ]
     selectBtn.MouseButton1Click:Connect(function()
-        local MainUI = scroll.Parent.Parent -- อ้างอิงถึง Frame หลักของ UFO HUB
-        
-        -- ลบของเก่าถ้าค้างอยู่
-        if MainUI:FindFirstChild("V2_Panel") then MainUI.V2_Panel:Destroy() end
+        local MainUI = scroll.Parent.Parent
+        if MainUI:FindFirstChild("ModelA_V2") then MainUI.ModelA_V2:Destroy() end
 
-        local v2Panel = Instance.new("Frame")
-        v2Panel.Name = "V2_Panel"
-        v2Panel.Parent = MainUI
-        v2Panel.Size = UDim2.new(0, 240, 0, 320)
-        v2Panel.Position = UDim2.new(1, 10, 0, 0) -- เด้งออกทางขวา 100%
-        v2Panel.BackgroundColor3 = THEME.BLACK
-        v2Panel.ZIndex = 200
-        corner(v2Panel, 12); stroke(v2Panel, 2.5, THEME.GREEN)
+        local v2 = Instance.new("Frame")
+        v2.Name = "ModelA_V2"
+        v2.Parent = MainUI
+        v2.Size = UDim2.new(0, 240, 0, 320)
+        v2.Position = UDim2.new(1, 10, 0, 0) -- เด้งขวา 100%
+        v2.BackgroundColor3 = THEME.BLACK; v2.ZIndex = 500; corner(v2, 12); stroke(v2, 2.5, THEME.GREEN)
 
-        -- Search (V2 Style)
         local sh = Instance.new("TextBox")
-        sh.Parent = v2Panel; sh.Size = UDim2.new(1, -20, 0, 35); sh.Position = UDim2.new(0, 10, 0, 10)
-        sh.BackgroundColor3 = Color3.fromRGB(15, 15, 15); sh.PlaceholderText = "🔍 Search"; sh.TextColor3 = THEME.WHITE; sh.Font = Enum.Font.GothamBold; corner(sh, 8); stroke(sh, 1.5, THEME.GREEN)
+        sh.Parent = v2; sh.Size = UDim2.new(1, -20, 0, 35); sh.Position = UDim2.new(0, 10, 0, 10); sh.BackgroundColor3 = Color3.fromRGB(15,15,15); sh.PlaceholderText = "🔍 Search"; sh.TextColor3 = THEME.WHITE; sh.Font = Enum.Font.GothamBold; corner(sh, 8); stroke(sh, 1.5, THEME.GREEN)
 
-        -- Scrolling
         local sc = Instance.new("ScrollingFrame")
-        sc.Parent = v2Panel; sc.Size = UDim2.new(1, 0, 1, -60); sc.Position = UDim2.new(0, 0, 0, 55); sc.BackgroundTransparency = 1; sc.ScrollBarThickness = 0
+        sc.Parent = v2; sc.Size = UDim2.new(1, 0, 1, -60); sc.Position = UDim2.new(0, 0, 0, 55); sc.BackgroundTransparency = 1; sc.ScrollBarThickness = 0
         Instance.new("UIListLayout", sc).HorizontalAlignment = Enum.HorizontalAlignment.Center
 
-        -- ปุ่ม Log (V2 Glow Button)
+        -- ปุ่ม Log (Glow V2)
         local btn = Instance.new("TextButton")
         btn.Parent = sc; btn.Size = UDim2.new(0.9, 0, 0, 32); btn.BackgroundColor3 = THEME.BLACK; btn.Text = "Log"; btn.TextColor3 = THEME.WHITE; btn.Font = Enum.Font.GothamBold; corner(btn, 6)
-        local bst = stroke(btn, 1.8, (_G.SelectedFuel == "Log" and THEME.GREEN or THEME.GREEN_DARK))
+        local bSt = stroke(btn, 1.8, (_G.SelectedFuel == "Log" and THEME.GREEN or THEME.GREEN_DARK))
         
         local glow = Instance.new("Frame")
         glow.Parent = btn; glow.Size = UDim2.new(0, 4, 1, 0); glow.BackgroundColor3 = THEME.GREEN; glow.BorderSizePixel = 0; glow.Visible = (_G.SelectedFuel == "Log")
 
         btn.MouseButton1Click:Connect(function()
             _G.SelectedFuel = "Log"
-            v2Panel:Destroy()
+            v2:Destroy()
         end)
     end)
-end)
-
--- [ LOGIC: ดึงไม้ทีละชิ้นไปที่กองไฟ ]
-_G.AutoRefuel = false
-_G.SelectedFuel = nil
-
-task.spawn(function()
-    while task.wait(0.5) do
-        if _G.AutoRefuel and _G.SelectedFuel == "Log" then
-            pcall(function()
-                local zone = workspace.Map.MainFire.InnerTouchZone
-                local items = workspace.Items:GetChildren()
-                for _, item in ipairs(items) do
-                    if item.Name == "Log" and item:IsA("BasePart") then
-                        item.CFrame = zone.CFrame * CFrame.new(0, 10, 0)
-                        item.Velocity = Vector3.new(0,0,0)
-                        item.Anchored = false
-                        task.wait(1.5) -- ปล่อยลงทีละชิ้น
-                        if not _G.AutoRefuel then break end
-                    end
-                end
-            end)
-        end
-    end
 end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Stand To Root 🧍"
