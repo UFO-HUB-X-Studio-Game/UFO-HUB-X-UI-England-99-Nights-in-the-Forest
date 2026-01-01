@@ -708,8 +708,7 @@ registerRight("Home", function(scroll) end)
 registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
-registerRight("Home", function(scroll)
-    -- [[ UFO HUB X: AUTO CAMPFIRE FULL SYSTEM (MODEL A V1 + V2) ]]
+-- [[ UFO HUB X: AUTO CAMPFIRE FULL SYSTEM (MODEL A V1 + V2) ]]
 
 registerRight("Home", function(scroll)
     local TweenService = game:GetService("TweenService")
