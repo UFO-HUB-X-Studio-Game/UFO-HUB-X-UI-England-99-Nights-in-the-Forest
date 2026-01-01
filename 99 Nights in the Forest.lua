@@ -708,711 +708,192 @@ registerRight("Home", function(scroll) end)
 registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
---===== UFO HUB X • Home – Model A V1 + AA1 =====
--- Header : "Auto Campfire 🔥"
--- Row 1  : "Auto Refill Campfire" (Switch / feeds logs STRICTLY one-by-one)
--- Row 2  : "Select Fuel" (Model A V2 Overlay / 1 button: "Log" toggle)
---
--- Campfire:
---   workspace.Map.Campground.MainFire.InnerTouchZone
--- Logs:
---   workspace.Items (Model) with: Main + "Meshes/log_Cylinder"
+--===== UFO HUB X: AUTO CAMPFIRE & FUEL SYSTEM (FULL COMPLETE) =====
 
-----------------------------------------------------------------------
--- 0) AA1 MINI (generic + onChanged signal)
-----------------------------------------------------------------------
-do
-    _G.UFOX_AA1 = _G.UFOX_AA1 or {}
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
-    local function makeAA1(systemName, defaultState)
-        local SAVE = (getgenv and getgenv().UFOX_SAVE) or {
-            get = function(_, _, d) return d end,
-            set = function() end
-        }
+-- [ SETTINGS & GLOBAL VARIABLES ]
+_G.AutoRefuel = false
+_G.SelectedFuel = nil
 
-        local GAME_ID  = tonumber(game.GameId)  or 0
-        local PLACE_ID = tonumber(game.PlaceId) or 0
-        local BASE_SCOPE = ("AA1/%s/%d/%d"):format(systemName, GAME_ID, PLACE_ID)
-        local function K(f) return BASE_SCOPE .. "/" .. f end
-
-        local function SaveGet(f, d)
-            local ok, v = pcall(function() return SAVE.get(K(f), d) end)
-            return ok and v or d
-        end
-        local function SaveSet(f, v) pcall(function() SAVE.set(K(f), v) end) end
-
-        local STATE = {}
-        for k, v in pairs(defaultState or {}) do
-            STATE[k] = SaveGet(k, v)
-        end
-
-        local listeners = {}
-        local function emit()
-            for i = #listeners, 1, -1 do
-                local cb = listeners[i]
-                if typeof(cb) == "function" then
-                    pcall(cb, STATE)
-                else
-                    table.remove(listeners, i)
-                end
-            end
-        end
-
-        local obj = {
-            state = STATE,
-            saveGet = SaveGet,
-            saveSet = SaveSet,
-            onChanged = function(cb)
-                table.insert(listeners, cb)
-                return function()
-                    for i = #listeners, 1, -1 do
-                        if listeners[i] == cb then
-                            table.remove(listeners, i)
-                            break
-                        end
-                    end
-                end
-            end
-        }
-
-        return obj, SaveSet, emit
-    end
-
-    _G.__UFOX_MAKE_AA1 = makeAA1
-end
-
-----------------------------------------------------------------------
--- 0.5) GLOBAL RUNNER STATE (anti-duplicate runners across re-run UI)
-----------------------------------------------------------------------
-_G.__UFOX_RUN_STATE = _G.__UFOX_RUN_STATE or {}
-
-----------------------------------------------------------------------
--- 1) AA1 (GLOBAL) - Row2: Fuel Selector (single option: Log)
-----------------------------------------------------------------------
-do
-    local SYSTEM_NAME = "Campfire_FuelSelector"
-    local makeAA1 = _G.__UFOX_MAKE_AA1
-
-    local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
-        Enabled  = false,
-        FuelName = "Log",
-    })
-
-    function AA1.setEnabled(v)
-        v = v and true or false
-        AA1.state.Enabled = v
-        SaveSet("Enabled", v)
-        emit()
-    end
-    function AA1.getEnabled() return AA1.state.Enabled == true end
-
-    function AA1.setFuel(name)
-        name = tostring(name or "Log")
-        AA1.state.FuelName = name
-        SaveSet("FuelName", name)
-        emit()
-    end
-    function AA1.getFuel()
-        return tostring(AA1.state.FuelName or "Log")
-    end
-
-    function AA1.ensureRunner() end
-
-    _G.UFOX_AA1[SYSTEM_NAME] = AA1
-end
-
-----------------------------------------------------------------------
--- 2) AA1 (GLOBAL) - Row1: Auto Refill Campfire (HARD one-by-one + forced descend)
-----------------------------------------------------------------------
-do
-    local SYSTEM_NAME = "Campfire_AutoRefill"
-    local makeAA1 = _G.__UFOX_MAKE_AA1
-
-    local AA1, SaveSet, emit = makeAA1(SYSTEM_NAME, {
-        Enabled     = false,
-        HeightMul   = 2.0,
-        DropWait    = 1.10,  -- หน่วงหลัง “ปล่อยลงจบ”
-        RescanEvery = 2.0,
-        Cooldown    = 8.0,
-        RetryWait   = 0.5,
-
-        -- ✅ แก้ค้างบน: ปล่อยลงแบบควบคุมเอง (ไม่พึ่งฟิสิกส์เริ่มตก)
-        DescendTime   = 0.75, -- เวลาที่ใช้ไหลลง (วินาที)
-        DescendStepHz = 30,   -- ความถี่การเลื่อนลง (ครั้ง/วินาที)
-        NudgeXZ       = 1.2,  -- กันวางตำแหน่งเดิมเป๊ะ (ลดโอกาสค้างซ้อน)
-    })
-
-    local AA1_FUEL = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
-
-    -- ✅ shared runner state across re-executions
-    _G.__UFOX_RUN_STATE = _G.__UFOX_RUN_STATE or {}
-    local RS = _G.__UFOX_RUN_STATE[SYSTEM_NAME]
-    if not RS then
-        RS = { token = 0, running = false, inFlight = false }
-        _G.__UFOX_RUN_STATE[SYSTEM_NAME] = RS
-    end
-
-    local itemsFolder
-    local function getItemsFolder()
-        if itemsFolder and itemsFolder.Parent then return itemsFolder end
-        local f = workspace:FindFirstChild("Items")
-        if f then itemsFolder = f end
-        return itemsFolder
-    end
-
-    local function getInnerTouchZone()
-        local ok, zone = pcall(function()
-            return workspace.Map.Campground.MainFire:FindFirstChild("InnerTouchZone")
-        end)
-        if ok and zone and zone:IsA("BasePart") then return zone end
-        return nil
-    end
-
-    local function isLogCrateModel(m)
-        if not m or not m:IsA("Model") then return false end
-        local main = m:FindFirstChild("Main")
-        local mesh = m:FindFirstChild("Meshes/log_Cylinder", true)
-        return (main ~= nil) and (mesh ~= nil)
-    end
-
-    local function ensurePrimaryPart(m)
-        if m.PrimaryPart and m.PrimaryPart:IsA("BasePart") then return m.PrimaryPart end
-        local pp = m:FindFirstChildWhichIsA("BasePart", true)
-        if pp then pcall(function() m.PrimaryPart = pp end) end
-        return pp
-    end
-
-    local function setModelAnchored(m, anchored)
-        for _, d in ipairs(m:GetDescendants()) do
-            if d:IsA("BasePart") then
-                pcall(function() d.Anchored = anchored end)
-            end
-        end
-    end
-
-    local function zeroVel(m)
-        for _, d in ipairs(m:GetDescendants()) do
-            if d:IsA("BasePart") then
-                pcall(function()
-                    d.AssemblyLinearVelocity  = Vector3.zero
-                    d.AssemblyAngularVelocity = Vector3.zero
-                end)
-            end
-        end
-    end
-
-    local function canFeedNow()
-        if not (AA1_FUEL and AA1_FUEL.getEnabled and AA1_FUEL.getEnabled()) then
-            return false
-        end
-        local fuel = (AA1_FUEL.getFuel and AA1_FUEL.getFuel()) or "Log"
-        return fuel == "Log"
-    end
-
-    -- Queue + anti-repeat
-    local queue = {}
-    local qIndex = 1
-    local lastScan = 0
-    local pickedAt = setmetatable({}, { __mode = "k" })
-
-    local function rebuildQueue()
-        local items = getItemsFolder()
-        queue = {}
-        qIndex = 1
-        if items then
-            for _, ch in ipairs(items:GetChildren()) do
-                if isLogCrateModel(ch) then
-                    table.insert(queue, ch)
-                end
-            end
-        end
-        lastScan = os.clock()
-    end
-
-    local function nextLog()
-        local now = os.clock()
-        local rescanEvery = tonumber(AA1.state.RescanEvery) or 2.0
-        if (#queue == 0) or ((now - lastScan) > rescanEvery) then
-            rebuildQueue()
-        end
-        if #queue == 0 then return nil end
-
-        local cd = tonumber(AA1.state.Cooldown) or 8.0
-        local tries = 0
-        while tries < #queue do
-            if qIndex > #queue then qIndex = 1 end
-            local m = queue[qIndex]
-            qIndex += 1
-            tries += 1
-
-            if m and m.Parent and isLogCrateModel(m) then
-                local t = pickedAt[m]
-                if (not t) or ((now - t) >= cd) then
-                    pickedAt[m] = now
-                    return m
-                end
-            end
-        end
-        return nil
-    end
-
-    -- ✅ forced descend: พาไม้ไหลลงเองทีละสเต็ป (จบแน่นอน ไม่ค้าง)
-    local function forcedDescend(crate, startCFrame, endPos)
-        local total = tonumber(AA1.state.DescendTime) or 0.75
-        if total < 0.2 then total = 0.2 end
-
-        local hz = tonumber(AA1.state.DescendStepHz) or 30
-        if hz < 10 then hz = 10 end
-
-        local dt = 1 / hz
-        local steps = math.max(1, math.floor(total / dt))
-
-        for i = 1, steps do
-            if not crate or not crate.Parent then return end
-            local a = i / steps
-            local y = startCFrame.Position.Y + (endPos.Y - startCFrame.Position.Y) * a
-            local pos = Vector3.new(endPos.X, y, endPos.Z)
+------------------------------------------------------------------------
+-- 1. THE LOGIC SYSTEM (ระบบเบื้องหลังการดึงไม้)
+------------------------------------------------------------------------
+task.spawn(function()
+    while task.wait(0.5) do
+        if _G.AutoRefuel and _G.SelectedFuel == "Log" then
             pcall(function()
-                crate:PivotTo(CFrame.new(pos) * startCFrame.Rotation)
-            end)
-            task.wait(dt)
-        end
-    end
-
-    local function dropOneLogIntoFire()
-        local zone = getInnerTouchZone()
-        if not zone then return false end
-        if not canFeedNow() then return false end
-
-        local crate = nextLog()
-        if not crate then return false end
-
-        local mul = tonumber(AA1.state.HeightMul) or 2.0
-        if mul < 0.2 then mul = 0.2 end
-
-        local nudge = tonumber(AA1.state.NudgeXZ) or 1.2
-        local dx = (math.random() - 0.5) * 2 * nudge
-        local dz = (math.random() - 0.5) * 2 * nudge
-
-        local up = zone.Size.Y * mul
-        local startPos = zone.Position + Vector3.new(dx, up, dz)
-        local endPos   = zone.Position + Vector3.new(dx, 0.25, dz)
-
-        local pp = ensurePrimaryPart(crate)
-        local rot = (pp and pp.CFrame.Rotation) or crate:GetPivot().Rotation
-
-        pcall(function()
-            -- ปลด Anchor + รีเซ็ตความเร็ว (กันไม้เก่าใน map)
-            setModelAnchored(crate, false)
-            zeroVel(crate)
-            crate:PivotTo(CFrame.new(startPos) * rot)
-            zeroVel(crate)
-        end)
-
-        forcedDescend(crate, CFrame.new(startPos) * rot, endPos)
-        return true
-    end
-
-    local function stopRunner()
-        RS.token += 1
-        RS.running = false
-        RS.inFlight = false
-    end
-
-    local function runner()
-        if RS.running or not AA1.state.Enabled then return end
-        RS.running = true
-        RS.token += 1
-        local my = RS.token
-
-        task.spawn(function()
-            while AA1.state.Enabled and RS.token == my do
-                if canFeedNow() then
-                    if not RS.inFlight then
-                        RS.inFlight = true
-                        pcall(dropOneLogIntoFire)
-                        RS.inFlight = false
-
-                        local w = tonumber(AA1.state.DropWait) or 1.10
-                        if w < 0.25 then w = 0.25 end
-                        task.wait(w)
-                    else
-                        task.wait(0.05)
+                -- Path: Workspace.Map.MainFire.InnerTouchZone
+                local targetZone = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("MainFire") and Workspace.Map.MainFire:FindFirstChild("InnerTouchZone")
+                local itemsFolder = Workspace:FindFirstChild("Items")
+                
+                if targetZone and itemsFolder then
+                    local log = itemsFolder:FindFirstChild("Log")
+                    if log and log:IsA("BasePart") then
+                        -- ดึงไม้มาอยู่ข้างบนแล้วปล่อย
+                        log.CFrame = targetZone.CFrame * CFrame.new(0, 8, 0)
+                        log.Anchored = false
+                        log.CanCollide = true
+                        task.wait(1) -- หน่วงเวลาปล่อยทีละอัน
                     end
-                else
-                    local rw = tonumber(AA1.state.RetryWait) or 0.5
-                    if rw < 0.1 then rw = 0.1 end
-                    task.wait(rw)
                 end
-            end
-            RS.running = false
-            RS.inFlight = false
-        end)
-    end
-
-    function AA1.setEnabled(v)
-        v = v and true or false
-        AA1.state.Enabled = v
-        SaveSet("Enabled", v)
-        emit()
-
-        if v then
-            -- เปิด Row1 = บังคับเปิด Row2 + เลือก Log
-            if AA1_FUEL then
-                if AA1_FUEL.setFuel then AA1_FUEL.setFuel("Log") end
-                if AA1_FUEL.setEnabled then AA1_FUEL.setEnabled(true) end
-            end
-            rebuildQueue()
-            stopRunner()
-            runner()
-        else
-            stopRunner()
+            end)
         end
     end
+end)
 
-    function AA1.getEnabled() return AA1.state.Enabled == true end
-    function AA1.ensureRunner()
-        if AA1.getEnabled() then
-            rebuildQueue()
-            stopRunner()
-            runner()
-        end
-    end
-
-    _G.UFOX_AA1[SYSTEM_NAME] = AA1
-
-    task.defer(function()
-        if AA1.getEnabled() then
-            AA1.ensureRunner()
-        end
-    end)
-end
-
-----------------------------------------------------------------------
--- 3) UI PART: Home (Model A V1) - Header + Row1 Switch + Row2 Model A V2 Overlay
-----------------------------------------------------------------------
+------------------------------------------------------------------------
+-- 2. MODEL A V1 (HOME - สำหรับเปิดปิดระบบ)
+------------------------------------------------------------------------
 registerRight("Home", function(scroll)
-    local TweenService = game:GetService("TweenService")
-    local UserInputService = game:GetService("UserInputService")
-
-    local AA1_ROW1 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_AutoRefill"]
-    local AA1_ROW2 = _G.UFOX_AA1 and _G.UFOX_AA1["Campfire_FuelSelector"]
-
     local THEME = {
-        GREEN      = Color3.fromRGB(25,255,125),
-        GREEN_DARK = Color3.fromRGB(0,120,60),
-        RED        = Color3.fromRGB(255,40,40),
-        WHITE      = Color3.fromRGB(255,255,255),
-        BLACK      = Color3.fromRGB(0,0,0),
+        GREEN = Color3.fromRGB(25,255,125),
+        RED   = Color3.fromRGB(255,40,40),
+        WHITE = Color3.fromRGB(255,255,255),
+        BLACK = Color3.fromRGB(0,0,0),
     }
 
-    local function corner(ui,r) local c=Instance.new("UICorner"); c.CornerRadius=UDim.new(0,r or 12); c.Parent=ui end
-    local function stroke(ui,t,col)
-        local s=Instance.new("UIStroke")
-        s.Thickness=t or 2.2
-        s.Color=col or THEME.GREEN
+    local function corner(ui, r)
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, r or 12)
+        c.Parent = ui
+    end
+
+    local function stroke(ui, th, col)
+        local s = Instance.new("UIStroke")
+        s.Thickness = th or 2.2
+        s.Color = col or THEME.GREEN
         s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Parent=ui
-        return s
-    end
-    local function tween(o,p,d) TweenService:Create(o,TweenInfo.new(d or 0.08,Enum.EasingStyle.Quad),p):Play() end
-
-    for _,n in ipairs({"CF_Header","CF_Row1","CF_Row2","CF_OptionsPanel"}) do
-        local o = scroll:FindFirstChild(n)
-            or scroll.Parent:FindFirstChild(n)
-            or (scroll:FindFirstAncestorOfClass("ScreenGui")
-                and scroll:FindFirstAncestorOfClass("ScreenGui"):FindFirstChild(n))
-        if o then o:Destroy() end
+        s.Parent = ui
     end
 
-    local list = scroll:FindFirstChildOfClass("UIListLayout")
-    if not list then
-        list = Instance.new("UIListLayout", scroll)
-        list.Padding = UDim.new(0,12)
-        list.SortOrder = Enum.SortOrder.LayoutOrder
-    end
-    scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-
-    local base = 0
-    for _,c in ipairs(scroll:GetChildren()) do
-        if c:IsA("GuiObject") and c ~= list then
-            base = math.max(base, c.LayoutOrder or 0)
-        end
-    end
-
+    -- Header: Auto 🔥 Campfire
     local header = Instance.new("TextLabel")
-    header.Name = "CF_Header"
     header.Parent = scroll
-    header.Size = UDim2.new(1,0,0,36)
+    header.Size = UDim2.new(1, 0, 0, 36)
     header.BackgroundTransparency = 1
     header.Font = Enum.Font.GothamBold
     header.TextSize = 16
     header.TextColor3 = THEME.WHITE
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Auto Campfire 🔥"
-    header.LayoutOrder = base + 1
+    header.Text = "Auto 🔥 Campfire"
 
-    local function makeRowSwitch(rowName, order, labelText, aa1Ref)
+    -- รายการที่ 1: เติมเชื้อเพลิง auto (Switch)
+    local function makeRowSwitch(labelText, getState, setState)
         local row = Instance.new("Frame")
-        row.Name = rowName
         row.Parent = scroll
-        row.Size = UDim2.new(1,-6,0,46)
+        row.Size = UDim2.new(1, -6, 0, 46)
         row.BackgroundColor3 = THEME.BLACK
-        corner(row,12)
-        stroke(row,2.2,THEME.GREEN)
-        row.LayoutOrder = order
+        corner(row, 12)
+        stroke(row, 2.2, THEME.GREEN)
 
-        local lab = Instance.new("TextLabel", row)
+        local lab = Instance.new("TextLabel")
+        lab.Parent = row
         lab.BackgroundTransparency = 1
-        lab.Position = UDim2.new(0,16,0,0)
-        lab.Size = UDim2.new(1,-160,1,0)
+        lab.Size = UDim2.new(1, -160, 1, 0)
+        lab.Position = UDim2.new(0, 16, 0, 0)
         lab.Font = Enum.Font.GothamBold
         lab.TextSize = 13
         lab.TextColor3 = THEME.WHITE
         lab.TextXAlignment = Enum.TextXAlignment.Left
         lab.Text = labelText
 
-        local sw = Instance.new("Frame", row)
+        local sw = Instance.new("Frame")
+        sw.Parent = row
         sw.AnchorPoint = Vector2.new(1,0.5)
-        sw.Position = UDim2.new(1,-12,0.5,0)
+        sw.Position = UDim2.new(1, -12, 0.5, 0)
         sw.Size = UDim2.fromOffset(52,26)
         sw.BackgroundColor3 = THEME.BLACK
-        corner(sw,13)
+        corner(sw, 13)
 
-        local st = Instance.new("UIStroke", sw)
-        st.Thickness = 1.8
+        local swStroke = Instance.new("UIStroke")
+        swStroke.Parent = sw
+        swStroke.Thickness = 1.8
 
-        local knob = Instance.new("Frame", sw)
+        local knob = Instance.new("Frame")
+        knob.Parent = sw
         knob.Size = UDim2.fromOffset(22,22)
-        knob.Position = UDim2.new(0,2,0.5,-11)
         knob.BackgroundColor3 = THEME.WHITE
+        knob.Position = UDim2.new(0,2,0.5,-11)
         corner(knob,11)
 
         local function update(on)
-            st.Color = on and THEME.GREEN or THEME.RED
-            tween(knob,{ Position = UDim2.new(on and 1 or 0,on and -24 or 2,0.5,-11) })
+            swStroke.Color = on and THEME.GREEN or THEME.RED
+            TweenService:Create(knob, TweenInfo.new(0.08), {
+                Position = UDim2.new(on and 1 or 0, on and -24 or 2, 0.5, -11)
+            }):Play()
         end
 
-        local btn = Instance.new("TextButton", sw)
-        btn.Size = UDim2.fromScale(1,1)
+        local btn = Instance.new("TextButton")
+        btn.Parent = sw
         btn.BackgroundTransparency = 1
+        btn.Size = UDim2.fromScale(1,1)
         btn.Text = ""
-        btn.AutoButtonColor = false
+        btn.MouseButton1Click:Connect(function()
+            if _G.SelectedFuel == nil then return end -- ต้องเลือกเชื้อเพลิงก่อน
+            local new = not getState()
+            setState(new)
+            update(new)
+        end)
+        update(getState())
+    end
+
+    makeRowSwitch("Auto Refuel", function() return _G.AutoRefuel end, function(v)
+        _G.AutoRefuel = v
+    end)
+end)
+
+------------------------------------------------------------------------
+-- 3. MODEL A V2 (SHOP/RIGHT UI - สำหรับเลือกไม้)
+------------------------------------------------------------------------
+registerRight("Shop", function(scroll)
+    local THEME = {
+        GREEN = Color3.fromRGB(25,255,125),
+        GREEN_DARK = Color3.fromRGB(0,120,60),
+        WHITE = Color3.fromRGB(255,255,255),
+        BLACK = Color3.fromRGB(0,0,0),
+    }
+
+    local header = Instance.new("TextLabel")
+    header.Parent = scroll
+    header.Size = UDim2.new(1, 0, 0, 36)
+    header.BackgroundTransparency = 1
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 16
+    header.TextColor3 = THEME.WHITE
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Text = "Select Fuel"
+
+    -- ปุ่ม Log (ไม้) แบบ Model A V2
+    local function makeFuelButton(label)
+        local btn = Instance.new("TextButton")
+        btn.Parent = scroll
+        btn.Size = UDim2.new(1, -6, 0, 46)
+        btn.BackgroundColor3 = THEME.BLACK
+        btn.Font = Enum.Font.GothamBold
+        btn.TextSize = 14
+        btn.TextColor3 = THEME.WHITE
+        btn.Text = label
+        
+        local c = Instance.new("UICorner")
+        c.CornerRadius = UDim.new(0, 12)
+        c.Parent = btn
+        
+        local st = Instance.new("UIStroke")
+        st.Thickness = 2.2
+        st.Color = THEME.GREEN_DARK
+        st.Parent = btn
 
         btn.MouseButton1Click:Connect(function()
-            local cur = (aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false
-            local v = not cur
-            if aa1Ref and aa1Ref.setEnabled then
-                aa1Ref.setEnabled(v)
-                if v and aa1Ref.ensureRunner then aa1Ref.ensureRunner() end
-            end
-            update(v)
-        end)
-
-        if aa1Ref and aa1Ref.onChanged then
-            aa1Ref.onChanged(function()
-                update((aa1Ref.getEnabled and aa1Ref.getEnabled()) or false)
-            end)
-        end
-
-        update((aa1Ref and aa1Ref.getEnabled and aa1Ref.getEnabled()) or false)
-        return update, row
-    end
-
-    -- Row1
-    makeRowSwitch("CF_Row1", base + 2, "Auto Refill Campfire", AA1_ROW1)
-
-    -- Row2 (A V1 row + A V2 overlay)
-    local row2 = Instance.new("Frame")
-    row2.Name = "CF_Row2"
-    row2.Parent = scroll
-    row2.Size = UDim2.new(1,-6,0,46)
-    row2.BackgroundColor3 = THEME.BLACK
-    corner(row2,12)
-    stroke(row2,2.2,THEME.GREEN)
-    row2.LayoutOrder = base + 3
-
-    local lab2 = Instance.new("TextLabel", row2)
-    lab2.BackgroundTransparency = 1
-    lab2.Position = UDim2.new(0,16,0,0)
-    lab2.Size = UDim2.new(1,-240,1,0)
-    lab2.Font = Enum.Font.GothamBold
-    lab2.TextSize = 13
-    lab2.TextColor3 = THEME.WHITE
-    lab2.TextXAlignment = Enum.TextXAlignment.Left
-    lab2.Text = "Select Fuel"
-
-    local panelParent = scroll.Parent
-    local optionsPanel, inputConn
-    local opened = false
-
-    local selectBtn = Instance.new("TextButton", row2)
-    selectBtn.Name = "CF_Select"
-    selectBtn.AnchorPoint = Vector2.new(1,0.5)
-    selectBtn.Position = UDim2.new(1,-16,0.5,0)
-    selectBtn.Size = UDim2.new(0,190,0,28)
-    selectBtn.BackgroundColor3 = THEME.BLACK
-    selectBtn.AutoButtonColor = false
-    selectBtn.Text = "Select Fuel"
-    selectBtn.Font = Enum.Font.GothamBold
-    selectBtn.TextSize = 13
-    selectBtn.TextColor3 = THEME.WHITE
-    corner(selectBtn,8)
-
-    local selectStroke = stroke(selectBtn, 1.8, THEME.GREEN_DARK)
-    selectStroke.Transparency = 0.4
-
-    local function updateSelectVisual(isOpen)
-        if isOpen then
-            selectStroke.Color        = THEME.GREEN
-            selectStroke.Thickness    = 2.4
-            selectStroke.Transparency = 0
-        else
-            selectStroke.Color        = THEME.GREEN_DARK
-            selectStroke.Thickness    = 1.8
-            selectStroke.Transparency = 0.4
-        end
-    end
-    updateSelectVisual(false)
-
-    local function disconnectInput()
-        if inputConn then inputConn:Disconnect() inputConn=nil end
-    end
-
-    local function closePanel()
-        if optionsPanel then optionsPanel:Destroy(); optionsPanel=nil end
-        disconnectInput()
-        opened = false
-        updateSelectVisual(false)
-    end
-
-    local function openPanel()
-        closePanel()
-
-        local pw, ph = panelParent.AbsoluteSize.X, panelParent.AbsoluteSize.Y
-        local leftRatio   = 0.645
-        local topRatio    = 0.02
-        local bottomRatio = 0.02
-        local rightMargin = 8
-
-        local leftX   = math.floor(pw * leftRatio)
-        local topY    = math.floor(ph * topRatio)
-        local bottomM = math.floor(ph * bottomRatio)
-
-        local w = pw - leftX - rightMargin
-        local h = ph - topY - bottomM
-
-        optionsPanel = Instance.new("Frame")
-        optionsPanel.Name = "CF_OptionsPanel"
-        optionsPanel.Parent = panelParent
-        optionsPanel.BackgroundColor3 = THEME.BLACK
-        optionsPanel.ClipsDescendants = true
-        optionsPanel.Position = UDim2.new(0,leftX,0,topY)
-        optionsPanel.Size = UDim2.new(0,w,0,h)
-        optionsPanel.ZIndex = 50
-        corner(optionsPanel,12)
-        stroke(optionsPanel,2.4,THEME.GREEN)
-
-        local body = Instance.new("Frame", optionsPanel)
-        body.BackgroundTransparency = 1
-        body.Position = UDim2.new(0,4,0,4)
-        body.Size = UDim2.new(1,-8,1,-8)
-        body.ZIndex = optionsPanel.ZIndex + 1
-
-        local logBtn = Instance.new("TextButton", body)
-        logBtn.Name = "Btn_Log"
-        logBtn.Size = UDim2.new(1,0,0,32)
-        logBtn.Position = UDim2.new(0,0,0,0)
-        logBtn.BackgroundColor3 = THEME.BLACK
-        logBtn.AutoButtonColor = false
-        logBtn.Font = Enum.Font.GothamBold
-        logBtn.TextSize = 14
-        logBtn.TextColor3 = THEME.WHITE
-        logBtn.Text = "Log"
-        logBtn.ZIndex = body.ZIndex + 1
-        corner(logBtn,8)
-
-        local st = stroke(logBtn, 1.8, THEME.GREEN_DARK)
-        st.Transparency = 0.4
-
-        local glowBar = Instance.new("Frame", logBtn)
-        glowBar.BackgroundColor3 = THEME.GREEN
-        glowBar.BorderSizePixel = 0
-        glowBar.Size = UDim2.new(0,3,1,0)
-        glowBar.Position = UDim2.new(0,0,0,0)
-        glowBar.ZIndex = logBtn.ZIndex + 1
-        glowBar.Visible = false
-
-        local function updateLogVisual(on)
-            if on then
-                st.Color = THEME.GREEN
-                st.Thickness = 2.4
-                st.Transparency = 0
-                glowBar.Visible = true
-            else
-                st.Color = THEME.GREEN_DARK
-                st.Thickness = 1.8
-                st.Transparency = 0.4
-                glowBar.Visible = false
-            end
-        end
-
-        local function isLogOn()
-            return (AA1_ROW2 and AA1_ROW2.getEnabled and AA1_ROW2.getEnabled()) or false
-        end
-
-        updateLogVisual(isLogOn())
-
-        logBtn.MouseButton1Click:Connect(function()
-            local cur = isLogOn()
-            local v = not cur
-            if AA1_ROW2 then
-                if AA1_ROW2.setFuel then AA1_ROW2.setFuel("Log") end
-                if AA1_ROW2.setEnabled then AA1_ROW2.setEnabled(v) end
-            end
-            updateLogVisual(v)
-
-            if AA1_ROW1 and AA1_ROW1.ensureRunner then
-                AA1_ROW1.ensureRunner()
-            end
-        end)
-
-        inputConn = UserInputService.InputBegan:Connect(function(input, gp)
-            if not optionsPanel then return end
-            if input.UserInputType ~= Enum.UserInputType.MouseButton1
-                and input.UserInputType ~= Enum.UserInputType.Touch then
-                return
-            end
-
-            local pos = input.Position
-            local px, py = pos.X, pos.Y
-
-            local op = optionsPanel.AbsolutePosition
-            local os = optionsPanel.AbsoluteSize
-
-            local inside =
-                px >= op.X and px <= op.X + os.X and
-                py >= op.Y and py <= op.Y + os.Y
-
-            if not inside then
-                closePanel()
-            end
+            _G.SelectedFuel = label
+            st.Color = THEME.GREEN -- เปลี่ยนสีขอบเมื่อเลือก
+            print("Selected Fuel:", _G.SelectedFuel)
         end)
     end
 
-    selectBtn.MouseButton1Click:Connect(function()
-        if opened then
-            closePanel()
-        else
-            openPanel()
-            opened = true
-            updateSelectVisual(true)
-        end
-    end)
-
-    task.defer(function()
-        if AA1_ROW1 and AA1_ROW1.ensureRunner then AA1_ROW1.ensureRunner() end
-    end)
+    makeFuelButton("Log")
 end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Stand To Root 🧍"
