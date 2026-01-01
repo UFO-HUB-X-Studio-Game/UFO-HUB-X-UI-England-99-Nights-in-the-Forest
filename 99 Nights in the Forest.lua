@@ -708,36 +708,34 @@ registerRight("Home", function(scroll) end)
 registerRight("Quest", function(scroll) end)
 registerRight("Shop", function(scroll) end)
 registerRight("Settings", function(scroll) end)
---===== UFO HUB X: AUTO CAMPFIRE & FUEL SYSTEM (FULL COMPLETE) =====
+--===== UFO HUB X: FULL AUTO CAMPFIRE SYSTEM (V1 + V2 100%) =====
 
 local TweenService = game:GetService("TweenService")
 local UserInputService = game:GetService("UserInputService")
 local Workspace = game:GetService("Workspace")
 
--- [ SETTINGS & GLOBAL VARIABLES ]
+-- [ GLOBAL SETTINGS ]
 _G.AutoRefuel = false
-_G.SelectedFuel = nil
+_G.SelectedFuel = nil -- ต้องเลือกเป็น "Log" ก่อนระบบถึงจะเดิน
 
 ------------------------------------------------------------------------
--- 1. THE LOGIC SYSTEM (ระบบเบื้องหลังการดึงไม้)
+-- 1. CAMPFIRE LOGIC (ระบบดึงไม้และปล่อยลงกองไฟ)
 ------------------------------------------------------------------------
 task.spawn(function()
     while task.wait(0.5) do
         if _G.AutoRefuel and _G.SelectedFuel == "Log" then
             pcall(function()
                 -- Path: Workspace.Map.MainFire.InnerTouchZone
-                local targetZone = Workspace:FindFirstChild("Map") and Workspace.Map:FindFirstChild("MainFire") and Workspace.Map.MainFire:FindFirstChild("InnerTouchZone")
-                local itemsFolder = Workspace:FindFirstChild("Items")
+                local zone = Workspace.Map.MainFire.InnerTouchZone
+                local items = Workspace.Items
                 
-                if targetZone and itemsFolder then
-                    local log = itemsFolder:FindFirstChild("Log")
-                    if log and log:IsA("BasePart") then
-                        -- ดึงไม้มาอยู่ข้างบนแล้วปล่อย
-                        log.CFrame = targetZone.CFrame * CFrame.new(0, 8, 0)
-                        log.Anchored = false
-                        log.CanCollide = true
-                        task.wait(1) -- หน่วงเวลาปล่อยทีละอัน
-                    end
+                local log = items:FindFirstChild("Log")
+                if log and log:IsA("BasePart") then
+                    -- ดึงไม้มาไว้ข้างบน (เหนือโซน 8 หน่วย)
+                    log.CFrame = zone.CFrame * CFrame.new(0, 8, 0)
+                    log.Anchored = false
+                    log.CanCollide = true
+                    task.wait(1.2) -- ปล่อยทีละอันแบบเรื่อยๆ
                 end
             end)
         end
@@ -745,7 +743,7 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------------
--- 2. MODEL A V1 (HOME - สำหรับเปิดปิดระบบ)
+-- 2. MODEL A V1: HOME (Auto 🔥 Campfire)
 ------------------------------------------------------------------------
 registerRight("Home", function(scroll)
     local THEME = {
@@ -755,21 +753,17 @@ registerRight("Home", function(scroll)
         BLACK = Color3.fromRGB(0,0,0),
     }
 
+    -- UI Helpers
     local function corner(ui, r)
         local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, r or 12)
-        c.Parent = ui
+        c.CornerRadius = UDim.new(0, r or 12); c.Parent = ui
     end
-
     local function stroke(ui, th, col)
         local s = Instance.new("UIStroke")
-        s.Thickness = th or 2.2
-        s.Color = col or THEME.GREEN
-        s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-        s.Parent = ui
+        s.Thickness = th; s.Color = col; s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border; s.Parent = ui
     end
 
-    -- Header: Auto 🔥 Campfire
+    -- Header
     local header = Instance.new("TextLabel")
     header.Parent = scroll
     header.Size = UDim2.new(1, 0, 0, 36)
@@ -780,73 +774,59 @@ registerRight("Home", function(scroll)
     header.TextXAlignment = Enum.TextXAlignment.Left
     header.Text = "Auto 🔥 Campfire"
 
-    -- รายการที่ 1: เติมเชื้อเพลิง auto (Switch)
-    local function makeRowSwitch(labelText, getState, setState)
-        local row = Instance.new("Frame")
-        row.Parent = scroll
-        row.Size = UDim2.new(1, -6, 0, 46)
-        row.BackgroundColor3 = THEME.BLACK
-        corner(row, 12)
-        stroke(row, 2.2, THEME.GREEN)
+    -- Row 1: Auto Refuel (Switch)
+    local row = Instance.new("Frame")
+    row.Parent = scroll
+    row.Size = UDim2.new(1, -6, 0, 46)
+    row.BackgroundColor3 = THEME.BLACK
+    corner(row, 12)
+    stroke(row, 2.2, THEME.GREEN)
 
-        local lab = Instance.new("TextLabel")
-        lab.Parent = row
-        lab.BackgroundTransparency = 1
-        lab.Size = UDim2.new(1, -160, 1, 0)
-        lab.Position = UDim2.new(0, 16, 0, 0)
-        lab.Font = Enum.Font.GothamBold
-        lab.TextSize = 13
-        lab.TextColor3 = THEME.WHITE
-        lab.TextXAlignment = Enum.TextXAlignment.Left
-        lab.Text = labelText
+    local lab = Instance.new("TextLabel")
+    lab.Parent = row
+    lab.BackgroundTransparency = 1
+    lab.Size = UDim2.new(1, -160, 1, 0)
+    lab.Position = UDim2.new(0, 16, 0, 0)
+    lab.Font = Enum.Font.GothamBold
+    lab.TextSize = 13
+    lab.TextColor3 = THEME.WHITE
+    lab.TextXAlignment = Enum.TextXAlignment.Left
+    lab.Text = "Auto Refuel"
 
-        local sw = Instance.new("Frame")
-        sw.Parent = row
-        sw.AnchorPoint = Vector2.new(1,0.5)
-        sw.Position = UDim2.new(1, -12, 0.5, 0)
-        sw.Size = UDim2.fromOffset(52,26)
-        sw.BackgroundColor3 = THEME.BLACK
-        corner(sw, 13)
+    local sw = Instance.new("Frame")
+    sw.Parent = row
+    sw.AnchorPoint = Vector2.new(1,0.5)
+    sw.Position = UDim2.new(1, -12, 0.5, 0)
+    sw.Size = UDim2.fromOffset(52,26)
+    sw.BackgroundColor3 = THEME.BLACK
+    corner(sw, 13)
+    local swStroke = Instance.new("UIStroke")
+    swStroke.Parent = sw; swStroke.Thickness = 1.8
 
-        local swStroke = Instance.new("UIStroke")
-        swStroke.Parent = sw
-        swStroke.Thickness = 1.8
+    local knob = Instance.new("Frame")
+    knob.Parent = sw; knob.Size = UDim2.fromOffset(22,22)
+    knob.BackgroundColor3 = THEME.WHITE; knob.Position = UDim2.new(0,2,0.5,-11)
+    corner(knob,11)
 
-        local knob = Instance.new("Frame")
-        knob.Parent = sw
-        knob.Size = UDim2.fromOffset(22,22)
-        knob.BackgroundColor3 = THEME.WHITE
-        knob.Position = UDim2.new(0,2,0.5,-11)
-        corner(knob,11)
-
-        local function update(on)
-            swStroke.Color = on and THEME.GREEN or THEME.RED
-            TweenService:Create(knob, TweenInfo.new(0.08), {
-                Position = UDim2.new(on and 1 or 0, on and -24 or 2, 0.5, -11)
-            }):Play()
-        end
-
-        local btn = Instance.new("TextButton")
-        btn.Parent = sw
-        btn.BackgroundTransparency = 1
-        btn.Size = UDim2.fromScale(1,1)
-        btn.Text = ""
-        btn.MouseButton1Click:Connect(function()
-            if _G.SelectedFuel == nil then return end -- ต้องเลือกเชื้อเพลิงก่อน
-            local new = not getState()
-            setState(new)
-            update(new)
-        end)
-        update(getState())
+    local function updateSwitch(on)
+        swStroke.Color = on and THEME.GREEN or THEME.RED
+        TweenService:Create(knob, TweenInfo.new(0.08), {
+            Position = UDim2.new(on and 1 or 0, on and -24 or 2, 0.5, -11)
+        }):Play()
     end
 
-    makeRowSwitch("Auto Refuel", function() return _G.AutoRefuel end, function(v)
-        _G.AutoRefuel = v
+    local btn = Instance.new("TextButton")
+    btn.Parent = sw; btn.BackgroundTransparency = 1; btn.Size = UDim2.fromScale(1,1); btn.Text = ""
+    btn.MouseButton1Click:Connect(function()
+        if _G.SelectedFuel == nil then return end -- ลอจิก: ต้องเลือกเชื้อเพลิงก่อน
+        _G.AutoRefuel = not _G.AutoRefuel
+        updateSwitch(_G.AutoRefuel)
     end)
+    updateSwitch(_G.AutoRefuel)
 end)
 
 ------------------------------------------------------------------------
--- 3. MODEL A V2 (SHOP/RIGHT UI - สำหรับเลือกไม้)
+-- 3. MODEL A V2: SHOP (Select Fuel + Log Button 100%)
 ------------------------------------------------------------------------
 registerRight("Shop", function(scroll)
     local THEME = {
@@ -856,6 +836,7 @@ registerRight("Shop", function(scroll)
         BLACK = Color3.fromRGB(0,0,0),
     }
 
+    -- Header
     local header = Instance.new("TextLabel")
     header.Parent = scroll
     header.Size = UDim2.new(1, 0, 0, 36)
@@ -866,34 +847,56 @@ registerRight("Shop", function(scroll)
     header.TextXAlignment = Enum.TextXAlignment.Left
     header.Text = "Select Fuel"
 
-    -- ปุ่ม Log (ไม้) แบบ Model A V2
-    local function makeFuelButton(label)
-        local btn = Instance.new("TextButton")
-        btn.Parent = scroll
-        btn.Size = UDim2.new(1, -6, 0, 46)
-        btn.BackgroundColor3 = THEME.BLACK
-        btn.Font = Enum.Font.GothamBold
-        btn.TextSize = 14
-        btn.TextColor3 = THEME.WHITE
-        btn.Text = label
-        
-        local c = Instance.new("UICorner")
-        c.CornerRadius = UDim.new(0, 12)
-        c.Parent = btn
-        
-        local st = Instance.new("UIStroke")
-        st.Thickness = 2.2
-        st.Color = THEME.GREEN_DARK
-        st.Parent = btn
+    -- แถวหลักสำหรับกดเปิด Popup
+    local row = Instance.new("Frame")
+    row.Parent = scroll; row.Size = UDim2.new(1, -6, 0, 46); row.BackgroundColor3 = THEME.BLACK
+    local c = Instance.new("UICorner"); c.CornerRadius = UDim.new(0, 12); c.Parent = row
+    local s = Instance.new("UIStroke"); s.Thickness = 2.2; s.Color = THEME.GREEN; s.Parent = row
 
-        btn.MouseButton1Click:Connect(function()
-            _G.SelectedFuel = label
-            st.Color = THEME.GREEN -- เปลี่ยนสีขอบเมื่อเลือก
-            print("Selected Fuel:", _G.SelectedFuel)
+    local selectBtn = Instance.new("TextButton")
+    selectBtn.Parent = row; selectBtn.Size = UDim2.new(1, 0, 1, 0); selectBtn.BackgroundTransparency = 1
+    selectBtn.Font = Enum.Font.GothamBold; selectBtn.TextSize = 14; selectBtn.TextColor3 = THEME.WHITE
+    selectBtn.Text = "🔍 Select Fuel Options"
+
+    -- ระบบ Popup Panel (V2 Style)
+    selectBtn.MouseButton1Click:Connect(function()
+        local panelParent = scroll.Parent
+        -- สร้าง Panel
+        local optionsPanel = Instance.new("Frame")
+        optionsPanel.Name = "FuelPanel"
+        optionsPanel.Parent = panelParent
+        optionsPanel.BackgroundColor3 = THEME.BLACK
+        optionsPanel.Size = UDim2.new(0, 200, 0, 250)
+        optionsPanel.Position = UDim2.new(0.5, -100, 0.2, 0)
+        optionsPanel.ZIndex = 100
+        local c2 = Instance.new("UICorner"); c2.CornerRadius = UDim.new(0, 12); c2.Parent = optionsPanel
+        local s2 = Instance.new("UIStroke"); s2.Thickness = 2.4; s2.Color = THEME.GREEN; s2.Parent = optionsPanel
+
+        -- ปุ่ม Log (ไม้) ด้านใน Popup
+        local logBtn = Instance.new("TextButton")
+        logBtn.Parent = optionsPanel
+        logBtn.Size = UDim2.new(0.9, 0, 0, 40)
+        logBtn.Position = UDim2.new(0.05, 0, 0.1, 0)
+        logBtn.BackgroundColor3 = THEME.GREEN_DARK
+        logBtn.Font = Enum.Font.GothamBold
+        logBtn.TextSize = 14
+        logBtn.TextColor3 = THEME.WHITE
+        logBtn.Text = "Log" -- ไม้ ภาษาอังกฤษ ไม่มีอิโมจิ
+        local c3 = Instance.new("UICorner"); c3.CornerRadius = UDim.new(0, 8); c3.Parent = logBtn
+
+        logBtn.MouseButton1Click:Connect(function()
+            _G.SelectedFuel = "Log"
+            print("Fuel Selected: Log")
+            optionsPanel:Destroy() -- เลือกแล้วปิด Popup
         end)
-    end
-
-    makeFuelButton("Log")
+        
+        -- คลิกข้างนอกเพื่อปิด
+        local input = UserInputService.InputBegan:Connect(function(io)
+            if io.UserInputType == Enum.UserInputType.MouseButton1 then
+                optionsPanel:Destroy()
+            end
+        end)
+    end)
 end)
 --===== UFO HUB X • Home – Model A V1 + AA1 =====
 -- Header : "Auto Stand To Root 🧍"
